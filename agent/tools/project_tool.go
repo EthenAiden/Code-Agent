@@ -58,6 +58,7 @@ type GetProjectContextInput struct {
 type ProjectContextOutput struct {
 	ProjectID     string             `json:"project_id"`
 	UserID        string             `json:"user_id"`
+	Framework     string             `json:"framework"` // "vue3", "react", "react-native", or ""
 	MessageCount  int                `json:"message_count"`
 	CreatedAt     string             `json:"created_at"`
 	FileStructure *FileStructureNode `json:"file_structure,omitempty"`
@@ -78,6 +79,7 @@ type ProjectManagerInterface interface {
 	CreateSession(ctx context.Context, userID string) (string, error)
 	ListSessions(ctx context.Context, userID string, limit, offset int) ([]model.SessionSummary, error)
 	DeleteSession(ctx context.Context, conversationID string, userID string) error
+	SetFramework(ctx context.Context, conversationID string, userID string, framework string) error
 }
 
 // getProjectContextTool implements the project context retrieval tool
@@ -130,6 +132,7 @@ func (p *getProjectContextTool) InvokableRun(ctx context.Context, argumentsInJSO
 	output := &ProjectContextOutput{
 		ProjectID:    input.ProjectID,
 		UserID:       input.UserID,
+		Framework:    details.Framework,
 		MessageCount: details.MessageCount,
 		CreatedAt:    details.CreatedAt.Format("2006-01-02 15:04:05"),
 	}
@@ -144,8 +147,14 @@ func (p *getProjectContextTool) InvokableRun(ctx context.Context, argumentsInJSO
 	}
 
 	// Generate summary
-	output.Summary = fmt.Sprintf("Project %s has %d messages. Created at %s.",
-		input.ProjectID, details.MessageCount, output.CreatedAt)
+	frameworkNote := ""
+	if details.Framework != "" {
+		frameworkNote = fmt.Sprintf(" Framework: %s.", details.Framework)
+	} else {
+		frameworkNote = " Framework: not yet selected."
+	}
+	output.Summary = fmt.Sprintf("Project %s has %d messages. Created at %s.%s",
+		input.ProjectID, details.MessageCount, output.CreatedAt, frameworkNote)
 
 	// Serialize output to JSON
 	result, err := json.MarshalIndent(output, "", "  ")

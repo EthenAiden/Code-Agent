@@ -21,42 +21,50 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// createAgent creates the complete Sequential Agent with all sub-agents and tools
-// This wires together: Intent Classifier -> Plan-Execute Agent (Planner -> Executor -> Replanner)
-// Requirements: 5.1, 5.2, 5.3, 6.1, 6.2, 12.1, 12.2, 12.3, 12.4, 13.7
-func createAgent(ctx context.Context, projectManager *service.ProjectManager) adk.Agent {
-	// Step 1: Initialize Chat Model with configuration from environment
-	chatModel, err := agentmodel.NewChatModel(ctx, nil)
+// createAgent creates the complete Sequential Agent with all sub-agents and tools.
+// Returns the top-level agent AND the intent classifier (reused by ChatHandler for HITL).
+func createAgent(ctx context.Context, projectManager *service.ProjectManager) (adk.Agent, *intent.IntentClassifier) {
+	// Step 1a: Initialize Planner model (GPT) for IntentClassifier, Planner, Replanner
+	plannerModel, err := agentmodel.NewPlannerModel(ctx, nil)
 	if err != nil {
-		log.Fatalf("failed to create chat model: %v", err)
+		log.Fatalf("failed to create planner model: %v", err)
 	}
-	log.Println("✓ Chat Model initialized")
+	log.Println("✓ Planner Model (GPT) initialized")
 
-	// Step 2: Initialize all tools
+	// Step 1b: Initialize Executor model (Claude) for code generation
+	executorModel, err := agentmodel.NewExecutorModel(ctx, nil)
+	if err != nil {
+		log.Fatalf("failed to create executor model: %v", err)
+	}
+	log.Println("✓ Executor Model (Claude) initialized")
+
+	// Step 2: Initialize all tools (per-project path built at request time via context)
 	projectRoot := getProjectRoot()
 	allTools := initializeTools(projectManager, projectRoot)
 	log.Printf("✓ Initialized %d tools", len(allTools))
 
-	// Step 3: Initialize Intent Classifier
-	intentClassifier := intent.NewIntentClassifier(chatModel)
+	// Step 3: Initialize Intent Classifier (uses planner/GPT model)
+	intentClassifier := intent.NewIntentClassifier(plannerModel)
 	log.Println("✓ Intent Classifier initialized")
 
-	// Step 4: Initialize Plan-Execute Agent (Planner, Executor, Replanner)
+	// Step 4: Initialize Plan-Execute Agent with split models
 	planExecuteAgent, err := planexecute.NewPlanExecuteAgent(ctx, &planexecute.PlanExecuteConfig{
-		ChatModel:     chatModel,
+		PlannerModel:  plannerModel,
+		ExecutorModel: executorModel,
 		Tools:         allTools,
-		MaxIterations: 20, // Default max iterations
+		MaxIterations: 20,
 	})
 	if err != nil {
 		log.Fatalf("failed to create plan-execute agent: %v", err)
 	}
-	log.Println("✓ Plan-Execute Agent initialized (Planner, Executor, Replanner)")
+	log.Println("✓ Plan-Execute Agent initialized (Planner=GPT, Executor=Claude, Replanner=GPT)")
 
 	// Step 5: Initialize Sequential Agent (top-level orchestrator)
+	// Chat responses also use the planner model (lightweight GPT for conversation)
 	sequentialAgent, err := sequential.NewSequentialAgent(ctx, &sequential.SequentialAgentConfig{
 		IntentClassifier: intentClassifier,
 		PlanExecuteAgent: planExecuteAgent,
-		ChatModel:        chatModel,
+		ChatModel:        plannerModel,
 		Name:             "CodeAgent",
 		Description:      "AI coding assistant with multi-agent architecture",
 	})
@@ -65,12 +73,10 @@ func createAgent(ctx context.Context, projectManager *service.ProjectManager) ad
 	}
 	log.Println("✓ Sequential Agent initialized")
 
-	return sequentialAgent
+	return sequentialAgent, intentClassifier
 }
 
-// initializeTools initializes all tools for the agent system
-// Tools: file operations, code execution, project context
-// Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6
+
 func initializeTools(projectManager *service.ProjectManager, projectRoot string) []tool.BaseTool {
 	allTools := make([]tool.BaseTool, 0)
 
@@ -81,6 +87,15 @@ func initializeTools(projectManager *service.ProjectManager, projectRoot string)
 
 	allTools = append(allTools, readFileTool, writeFileTool, listDirectoryTool)
 
+	// Framework scaffold tool (must be called first for new projects)
+	scaffoldTool := tools.NewScaffoldProjectTool(projectRoot)
+	allTools = append(allTools, scaffoldTool)
+
+	// Code validation tools
+	typeCheckTool := tools.NewRunTypeCheckTool(projectRoot)
+	buildTool := tools.NewRunBuildTool(projectRoot)
+	allTools = append(allTools, typeCheckTool, buildTool)
+
 	// Code execution tool
 	codeExecTool := tools.NewExecuteCodeTool(projectRoot)
 	allTools = append(allTools, codeExecTool)
@@ -88,6 +103,12 @@ func initializeTools(projectManager *service.ProjectManager, projectRoot string)
 	// Project context tool
 	projectContextTool := tools.NewGetProjectContextTool(projectManager, projectRoot)
 	allTools = append(allTools, projectContextTool)
+
+	// MCP tools (optional — loaded from MCP_SERVER_URL env var, e.g. Playwright MCP)
+	ctx := context.Background()
+	if mcpTools := tools.LoadMCPTools(ctx); len(mcpTools) > 0 {
+		allTools = append(allTools, mcpTools...)
+	}
 
 	return allTools
 }
@@ -145,13 +166,13 @@ func main() {
 	// This initializes: Intent Classifier, Planner, Executor, Replanner, and all tools
 	ctx := context.Background()
 	log.Println("=== Initializing Agent System ===")
-	agent := createAgent(ctx, projectManager)
+	agent, intentClassifier := createAgent(ctx, projectManager)
 	log.Println("=== Agent System Ready ===")
 	log.Println()
 
 	// Create handler instances
 	sessionHandler := handler.NewProjectHandler(projectManager)
-	chatHandler := handler.NewChatHandler(messageHistoryService, projectManager, agent)
+	chatHandler := handler.NewChatHandler(messageHistoryService, projectManager, agent, intentClassifier)
 	healthHandler := handler.NewHealthHandler()
 
 	// Initialize Hertz

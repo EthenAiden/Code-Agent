@@ -190,3 +190,16 @@ func (sm *ProjectManager) DeleteSession(ctx context.Context, conversationID stri
 
 	return nil
 }
+
+// SetFramework stores the chosen framework for a project and invalidates the cache.
+func (sm *ProjectManager) SetFramework(ctx context.Context, conversationID string, userID string, framework string) error {
+	err := sm.sessionRepo.SetFramework(ctx, conversationID, userID, framework)
+	if err != nil {
+		return ConvertRepositoryError("FRAMEWORK_UPDATE_FAILED", err)
+	}
+	// Invalidate Redis cache so next GetSession reflects the new framework
+	if sm.cacheRepo != nil {
+		_ = sm.cacheRepo.DeleteSessionCache(ctx, conversationID, userID)
+	}
+	return nil
+}

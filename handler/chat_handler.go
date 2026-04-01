@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/sse"
 	agentcontext "github.com/ethen-aiden/code-agent/agent/context"
+	"github.com/ethen-aiden/code-agent/agent/intent"
 	"github.com/ethen-aiden/code-agent/agent/tools"
 	"github.com/ethen-aiden/code-agent/model"
 	"github.com/ethen-aiden/code-agent/service"
@@ -23,15 +25,29 @@ type ChatHandler struct {
 	messageHistoryService *service.MessageHistoryService
 	projectManager        tools.ProjectManagerInterface
 	agent                 adk.Agent
+	intentClassifier      *intent.IntentClassifier
 }
 
 // NewChatHandler creates a new ChatHandler with dependency injection
-func NewChatHandler(messageHistoryService *service.MessageHistoryService, projectManager tools.ProjectManagerInterface, agent adk.Agent) *ChatHandler {
+func NewChatHandler(
+	messageHistoryService *service.MessageHistoryService,
+	projectManager tools.ProjectManagerInterface,
+	agent adk.Agent,
+	intentClassifier *intent.IntentClassifier,
+) *ChatHandler {
 	return &ChatHandler{
 		messageHistoryService: messageHistoryService,
 		projectManager:        projectManager,
 		agent:                 agent,
+		intentClassifier:      intentClassifier,
 	}
+}
+
+// clarificationPayload is the JSON body of a "clarification_needed" SSE event.
+type clarificationPayload struct {
+	Type    string   `json:"type"`
+	Message string   `json:"message"`
+	Options []string `json:"options"`
 }
 
 // Chat handles POST /api/v1/projects/{project_id}/chat
@@ -118,6 +134,58 @@ func (h *ChatHandler) Chat(ctx context.Context, c *app.RequestContext) {
 		agentcontext.AppendContextParams(ctx, map[string]interface{}{
 			"project_context": projectContext,
 		})
+
+		// ── Human-in-the-Loop: Framework Selection ──────────────────────────────
+		// If the project has no framework set yet, AND the user message is a code
+		// generation intent, AND the request body does NOT include a framework
+		// selection → pause and ask the user to pick a framework.
+		if projectContext.Framework == "" && req.Framework == "" {
+			classification, classErr := h.intentClassifier.Classify(ctx, req.Message)
+			if classErr == nil &&
+				(classification.Intent == intent.IntentGenerateCode || classification.Intent == intent.IntentModifyCode) {
+				// Persist the user message first (so conversation history is intact)
+				userMsg := model.Message{
+					ConversationID: projectID,
+					Role:           "user",
+					Content:        req.Message,
+					Timestamp:      time.Now(),
+				}
+				_ = h.messageHistoryService.InsertMessage(ctx, userMsg, userIDStr)
+
+				// Send the clarification_needed SSE event and stop
+				w := sse.NewWriter(c)
+				defer w.Close()
+				payload := clarificationPayload{
+					Type:    "framework_selection",
+					Message: "请选择本项目使用的前端框架，以便生成对应的代码结构：",
+					Options: []string{"vue3", "react", "react-native"},
+				}
+				payloadBytes, _ := json.Marshal(payload)
+				_ = w.WriteEvent("", "clarification_needed", payloadBytes)
+				_ = w.WriteEvent("", "done", []byte(""))
+				return
+			}
+		}
+
+		// If this request carries a framework choice (response to clarification), persist it
+		if req.Framework != "" && projectContext.Framework == "" {
+			if saveErr := h.projectManager.SetFramework(ctx, projectID, userIDStr, req.Framework); saveErr != nil {
+				log.Printf("Warning: Failed to save framework: %v", saveErr)
+			} else {
+				projectContext.Framework = req.Framework
+				// Update context so agents pick it up
+				agentcontext.AppendContextParams(ctx, map[string]interface{}{
+					"framework": req.Framework,
+				})
+			}
+		}
+
+		// Inject framework into agent context so Planner/Executor prompts get the constraint
+		if projectContext.Framework != "" {
+			agentcontext.AppendContextParams(ctx, map[string]interface{}{
+				"framework": projectContext.Framework,
+			})
+		}
 	}
 
 	// Get message history for context
@@ -365,6 +433,7 @@ func (h *ChatHandler) GetMessages(ctx context.Context, c *app.RequestContext) {
 type ProjectContext struct {
 	ProjectID     string                 `json:"project_id"`
 	UserID        string                 `json:"user_id"`
+	Framework     string                 `json:"framework"` // "vue3", "react", "react-native", or ""
 	MessageCount  int                    `json:"message_count"`
 	CreatedAt     string                 `json:"created_at"`
 	FileStructure map[string]interface{} `json:"file_structure,omitempty"`
@@ -383,6 +452,7 @@ func (h *ChatHandler) loadProjectContext(ctx context.Context, projectID string, 
 	projectContext := &ProjectContext{
 		ProjectID:    projectID,
 		UserID:       userID,
+		Framework:    details.Framework,
 		MessageCount: details.MessageCount,
 		CreatedAt:    details.CreatedAt.Format(time.RFC3339),
 		Metadata: map[string]interface{}{

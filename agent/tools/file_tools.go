@@ -10,7 +10,21 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	agentcontext "github.com/ethen-aiden/code-agent/agent/context"
 )
+
+// projectDir resolves the per-project working directory.
+// It reads "project_id" from the agent context and returns baseRoot/project_id/.
+// Falls back to baseRoot when no project_id is present.
+func projectDir(ctx context.Context, baseRoot string) string {
+	if projectID, ok := agentcontext.GetTypedContextParams[string](ctx, "project_id"); ok && projectID != "" {
+		dir := filepath.Join(baseRoot, projectID)
+		// Ensure the project directory exists
+		_ = os.MkdirAll(dir, 0755)
+		return dir
+	}
+	return baseRoot
+}
 
 // ReadFileTool provides file reading capabilities for agents
 var readFileToolInfo = &schema.ToolInfo{
@@ -72,8 +86,11 @@ func (r *readFileTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 		return "error: path cannot be empty", nil
 	}
 
+	// Resolve per-project directory from context
+	root := projectDir(ctx, r.projectRoot)
+
 	// Validate and resolve file path
-	fullPath, err := r.validatePath(input.Path)
+	fullPath, err := validatePathInRoot(input.Path, root)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err.Error()), nil
 	}
@@ -116,20 +133,17 @@ func (r *readFileTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 	return result, nil
 }
 
-// validatePath validates the file path and prevents directory traversal attacks
-func (r *readFileTool) validatePath(path string) (string, error) {
-	// Clean the path to resolve any .. or . components
+// validatePathInRoot validates a relative file path against a specific root directory.
+// It prevents directory traversal attacks and returns the absolute path.
+func validatePathInRoot(path string, root string) (string, error) {
 	cleanPath := filepath.Clean(path)
-
-	// Resolve to absolute path
-	fullPath := filepath.Join(r.projectRoot, cleanPath)
+	fullPath := filepath.Join(root, cleanPath)
 	absPath, err := filepath.Abs(fullPath)
 	if err != nil {
 		return "", fmt.Errorf("invalid path: %w", err)
 	}
 
-	// Ensure the path is within project root
-	absRoot, err := filepath.Abs(r.projectRoot)
+	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("invalid project root: %w", err)
 	}
@@ -138,11 +152,19 @@ func (r *readFileTool) validatePath(path string) (string, error) {
 		return "", fmt.Errorf("access denied: path is outside project directory")
 	}
 
+	return absPath, nil
+}
+
+// validatePath validates the file path and prevents directory traversal attacks
+func (r *readFileTool) validatePath(path string) (string, error) {
+	absPath, err := validatePathInRoot(path, r.projectRoot)
+	if err != nil {
+		return "", err
+	}
 	// Check if file exists
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
 		return "", fmt.Errorf("file does not exist: %s", path)
 	}
-
 	return absPath, nil
 }
 
@@ -203,8 +225,20 @@ func (w *writeFileTool) InvokableRun(ctx context.Context, argumentsInJSON string
 		return "error: path cannot be empty", nil
 	}
 
+	// Resolve per-project directory from context
+	root := projectDir(ctx, w.projectRoot)
+
+	// Block sensitive files
+	cleanPath := filepath.Clean(input.Path)
+	sensitivePatterns := []string{".env", ".git", ".ssh", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+	for _, sensitive := range sensitivePatterns {
+		if strings.Contains(cleanPath, sensitive) {
+			return "error: access denied: cannot write to sensitive file", nil
+		}
+	}
+
 	// Validate and resolve file path
-	fullPath, err := w.validatePath(input.Path)
+	fullPath, err := validatePathInRoot(input.Path, root)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err.Error()), nil
 	}
@@ -223,37 +257,9 @@ func (w *writeFileTool) InvokableRun(ctx context.Context, argumentsInJSON string
 	return fmt.Sprintf("success: file written to %s", input.Path), nil
 }
 
-// validatePath validates the file path and prevents directory traversal attacks
+// validatePath delegates to the shared validatePathInRoot helper.
 func (w *writeFileTool) validatePath(path string) (string, error) {
-	// Clean the path to resolve any .. or . components
-	cleanPath := filepath.Clean(path)
-
-	// Resolve to absolute path
-	fullPath := filepath.Join(w.projectRoot, cleanPath)
-	absPath, err := filepath.Abs(fullPath)
-	if err != nil {
-		return "", fmt.Errorf("invalid path: %w", err)
-	}
-
-	// Ensure the path is within project root
-	absRoot, err := filepath.Abs(w.projectRoot)
-	if err != nil {
-		return "", fmt.Errorf("invalid project root: %w", err)
-	}
-
-	if !strings.HasPrefix(absPath, absRoot) {
-		return "", fmt.Errorf("access denied: path is outside project directory")
-	}
-
-	// Block access to sensitive files and directories
-	sensitivePatterns := []string{".env", ".git", ".ssh", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
-	for _, sensitive := range sensitivePatterns {
-		if strings.Contains(cleanPath, sensitive) {
-			return "", fmt.Errorf("access denied: cannot write to sensitive file")
-		}
-	}
-
-	return absPath, nil
+	return validatePathInRoot(path, w.projectRoot)
 }
 
 // ListDirectoryTool provides directory listing capabilities for agents
@@ -310,10 +316,22 @@ func (l *listDirectoryTool) InvokableRun(ctx context.Context, argumentsInJSON st
 		input.Path = "."
 	}
 
+	// Resolve per-project directory from context
+	root := projectDir(ctx, l.projectRoot)
+
 	// Validate and resolve directory path
-	fullPath, err := l.validatePath(input.Path)
+	fullPath, err := validatePathInRoot(input.Path, root)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err.Error()), nil
+	}
+
+	// Verify it's a directory
+	info, err := os.Stat(fullPath)
+	if os.IsNotExist(err) {
+		return fmt.Sprintf("error: directory does not exist: %s", input.Path), nil
+	}
+	if !info.IsDir() {
+		return fmt.Sprintf("error: path is not a directory: %s", input.Path), nil
 	}
 
 	// List directory contents
@@ -387,39 +405,7 @@ func (l *listDirectoryTool) listRecursive(dirPath string, prefix string, result 
 	return nil
 }
 
-// validatePath validates the directory path and prevents directory traversal attacks
+// validatePath delegates to the shared validatePathInRoot helper.
 func (l *listDirectoryTool) validatePath(path string) (string, error) {
-	// Clean the path to resolve any .. or . components
-	cleanPath := filepath.Clean(path)
-
-	// Resolve to absolute path
-	fullPath := filepath.Join(l.projectRoot, cleanPath)
-	absPath, err := filepath.Abs(fullPath)
-	if err != nil {
-		return "", fmt.Errorf("invalid path: %w", err)
-	}
-
-	// Ensure the path is within project root
-	absRoot, err := filepath.Abs(l.projectRoot)
-	if err != nil {
-		return "", fmt.Errorf("invalid project root: %w", err)
-	}
-
-	if !strings.HasPrefix(absPath, absRoot) {
-		return "", fmt.Errorf("access denied: path is outside project directory")
-	}
-
-	// Check if directory exists
-	info, err := os.Stat(absPath)
-	if os.IsNotExist(err) {
-		return "", fmt.Errorf("directory does not exist: %s", path)
-	}
-	if err != nil {
-		return "", fmt.Errorf("failed to access directory: %w", err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("path is not a directory: %s", path)
-	}
-
-	return absPath, nil
+	return validatePathInRoot(path, l.projectRoot)
 }

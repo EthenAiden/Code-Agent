@@ -20,12 +20,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/prebuilt/planexecute"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/prompt"
 	"github.com/cloudwego/eino/schema"
+	agentcontext "github.com/ethen-aiden/code-agent/agent/context"
 	"github.com/ethen-aiden/code-agent/agent/planner"
 )
 
@@ -76,12 +78,22 @@ var replannerPromptTemplate = prompt.FromMessages(schema.FString,
 - Steps need to be added, removed, or modified
 - Execution results suggest a different approach
 - Dependencies or requirements changed
+- A validation step (run_type_check or run_build) returned errors that must be fixed
 
 ### When to CONTINUE
 - Execution is progressing as expected
 - Remaining steps are still appropriate
 - No adjustments needed to the current plan
 - Simply proceed with the next step
+
+## Self-Repair Guidelines
+
+When a run_type_check or run_build step returns {"success": false, ...}:
+1. Parse the stderr/stdout from the result to identify the specific errors
+2. REPLAN: add targeted fix steps BEFORE the next validation step
+3. Each fix step should address one specific error (wrong import, missing type, syntax issue, etc.)
+4. After fix steps, add another run_type_check or run_build step to verify the fix
+5. IMPORTANT: If {repair_round} >= 3, do NOT add more fix steps — instead submit_result with an error summary
 
 ## Available Tools
 
@@ -108,6 +120,8 @@ You have access to two tools:
 
 ## REMAINING STEPS IN CURRENT PLAN
 {remaining_steps}
+
+{repair_context}
 
 ## YOUR TASK
 Evaluate the execution progress and decide the next action:
@@ -144,6 +158,9 @@ func NewReplanner(ctx context.Context, config *ReplannerConfig) (adk.Agent, erro
 	return replannerAgent, nil
 }
 
+// maxRepairRounds is the maximum number of self-repair cycles before aborting.
+const maxRepairRounds = 3
+
 // generateReplannerInput generates the input messages for the replanner agent
 func generateReplannerInput(ctx context.Context, execCtx *planexecute.ExecutionContext) ([]adk.Message, error) {
 	// Get the plan
@@ -171,18 +188,72 @@ func generateReplannerInput(ctx context.Context, execCtx *planexecute.ExecutionC
 		return nil, fmt.Errorf("failed to marshal remaining steps: %w", err)
 	}
 
+	// Detect validation failure in the last executed step and manage repair rounds.
+	repairRound := 0
+	if r, ok := agentcontext.GetTypedContextParams[int](ctx, "repair_round"); ok {
+		repairRound = r
+	}
+
+	repairContext := ""
+	if len(execCtx.ExecutedSteps) > 0 {
+		lastStep := execCtx.ExecutedSteps[len(execCtx.ExecutedSteps)-1]
+		if isValidationFailure(lastStep.Result) {
+			repairRound++
+			agentcontext.AppendContextParams(ctx, map[string]interface{}{
+				"repair_round": repairRound,
+			})
+			if repairRound >= maxRepairRounds {
+				repairContext = fmt.Sprintf(
+					"## SELF-REPAIR STATUS\n⚠️ Repair round limit reached (%d/%d). Do NOT add more fix steps — call submit_result with an error summary instead.",
+					repairRound, maxRepairRounds,
+				)
+			} else {
+				repairContext = fmt.Sprintf(
+					"## SELF-REPAIR STATUS\nThe last validation step FAILED (repair round %d/%d). "+
+						"You MUST replan: add targeted fix steps for each error in the result above, "+
+						"then add another run_type_check or run_build step to verify the fix.",
+					repairRound, maxRepairRounds,
+				)
+			}
+		} else if repairRound > 0 && !isValidationFailure(lastStep.Result) {
+			// Validation passed after repairs — reset counter
+			agentcontext.AppendContextParams(ctx, map[string]interface{}{
+				"repair_round": 0,
+			})
+		}
+	}
+
 	// Generate the prompt
 	messages, err := replannerPromptTemplate.Format(ctx, map[string]any{
 		"user_input":      userInputStr,
 		"goal":            plan.Goal,
 		"executed_steps":  executedStepsStr,
 		"remaining_steps": string(remainingStepsJSON),
+		"repair_round":    repairRound,
+		"repair_context":  repairContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to format replanner prompt: %w", err)
 	}
 
 	return messages, nil
+}
+
+// isValidationFailure returns true if the tool result JSON indicates a failed
+// run_type_check or run_build invocation.
+func isValidationFailure(result string) bool {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return false
+	}
+	// Quick heuristic: the ValidationResult JSON always has "success":false when failed.
+	var v struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal([]byte(result), &v); err != nil {
+		return false
+	}
+	return !v.Success
 }
 
 // formatUserInput formats the user input messages into a string

@@ -12,6 +12,8 @@ type Project struct {
 	Description string    `json:"description" db:"description"`
 	Icon        string    `json:"icon" db:"icon"`
 	Thumbnail   string    `json:"thumbnail" db:"thumbnail"`
+	// Framework stores the chosen frontend framework: "vue3", "react", "react-native", or "" (not yet chosen)
+	Framework   string    `json:"framework" db:"framework"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 	Version     int       `json:"version" db:"version"` // For optimistic locking
@@ -53,6 +55,7 @@ type SessionSummary struct {
 // SessionDetails represents detailed session information
 type SessionDetails struct {
 	ConversationID string     `json:"conversation_id"`
+	Framework      string     `json:"framework"` // "vue3", "react", "react-native", or ""
 	MessageCount   int        `json:"message_count"`
 	CreatedAt      time.Time  `json:"created_at"`
 	LastMessageAt  *time.Time `json:"last_message_at,omitempty"` // Pointer to handle NULL values
@@ -88,6 +91,9 @@ type CreateProjectRequest struct {
 	Description string `json:"description,omitempty"`
 	Icon        string `json:"icon,omitempty"`
 	Thumbnail   string `json:"thumbnail,omitempty"`
+	// Framework optionally pre-selects the frontend framework.
+	// Valid values: "vue3", "react", "react-native". Leave empty to trigger HITL selection.
+	Framework   string `json:"framework,omitempty"`
 }
 
 // CreateSessionRequest is kept for backward compatibility
@@ -102,6 +108,9 @@ type ListSessionsRequest struct {
 // ChatRequest represents the chat message request
 type ChatRequest struct {
 	Message string `json:"message"`
+	// Framework allows the frontend to send the user's framework choice when responding
+	// to a clarification_needed SSE event.
+	Framework string `json:"framework,omitempty"`
 }
 
 // ChatResponse represents the chat response

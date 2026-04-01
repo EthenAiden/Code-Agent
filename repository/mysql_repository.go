@@ -131,7 +131,7 @@ func NewRepositoryError(errorCode string, err error) *RepositoryError {
 // InsertSession creates a new session in MySQL
 func (spr *MySQLSessionPersistenceRepository) InsertSession(ctx context.Context, conversationID string, userID string) error {
 	return spr.retryWithBackoff(ctx, 3, func() error {
-		query := `INSERT INTO sessions (id, user_id, version) VALUES (?, ?, 1)`
+		query := `INSERT INTO sessions (id, user_id, framework, version) VALUES (?, ?, '', 1)`
 		_, err := spr.db.ExecContext(ctx, query, conversationID, userID)
 		if err != nil {
 			return fmt.Errorf("failed to insert session: %w", err)
@@ -300,7 +300,8 @@ func (spr *MySQLSessionPersistenceRepository) GetSessionDetails(ctx context.Cont
 
 	err := spr.retryWithBackoff(ctx, 3, func() error {
 		query := `
-			SELECT s.id, 
+			SELECT s.id,
+				   COALESCE(s.framework, '') as framework,
 				   COALESCE((SELECT COUNT(*) FROM messages m WHERE m.conversation_id = s.id AND m.status != 'failed'), 0) as message_count,
 				   s.created_at,
 				   (SELECT MAX(m.timestamp) FROM messages m WHERE m.conversation_id = s.id AND m.status != 'failed') as last_message_at
@@ -309,6 +310,7 @@ func (spr *MySQLSessionPersistenceRepository) GetSessionDetails(ctx context.Cont
 
 		err := spr.db.QueryRowContext(ctx, query, conversationID, userID).Scan(
 			&details.ConversationID,
+			&details.Framework,
 			&details.MessageCount,
 			&details.CreatedAt,
 			&lastMessageAt,
@@ -336,6 +338,19 @@ func (spr *MySQLSessionPersistenceRepository) GetSessionDetails(ctx context.Cont
 	}
 
 	return &details, nil
+}
+
+// SetFramework stores the chosen framework for a session.
+func (spr *MySQLSessionPersistenceRepository) SetFramework(ctx context.Context, conversationID string, userID string, framework string) error {
+	return spr.retryWithBackoff(ctx, 3, func() error {
+		_, err := spr.db.ExecContext(ctx,
+			`UPDATE sessions SET framework = ? WHERE id = ? AND user_id = ?`,
+			framework, conversationID, userID)
+		if err != nil {
+			return fmt.Errorf("failed to set framework: %w", err)
+		}
+		return nil
+	})
 }
 
 // SessionExists checks if a session exists

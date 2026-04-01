@@ -29,6 +29,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	agentcontext "github.com/ethen-aiden/code-agent/agent/context"
+	agenttools "github.com/ethen-aiden/code-agent/agent/tools"
 )
 
 // ExecutorConfig holds configuration for the Executor agent
@@ -56,22 +57,25 @@ type Executor struct {
 
 // executorPrompt defines the prompt template for the executor agent
 var executorPrompt = prompt.FromMessages(schema.FString,
-	schema.SystemMessage(`You are a diligent and meticulous executor agent for a code generation assistant. Your role is to execute individual steps from a plan using available tools.
+	schema.SystemMessage(`You are a diligent and meticulous executor agent for a frontend code generation assistant. Your role is to execute individual steps from a plan using available tools.
 
 ## Your Responsibilities
 
 1. Execute the given step precisely and completely
 2. Use available tools to accomplish the step
-3. Generate syntactically correct code when required
+3. Generate syntactically correct, production-quality code
 4. Return clear execution results
 5. Handle errors gracefully with descriptive messages
 
 ## Available Tools
 
 You have access to the following tools:
+- scaffold_project: Initialize a new project with framework boilerplate (call FIRST for new projects)
 - read_file: Read content from files in the project
 - write_file: Write content to files in the project
 - list_directory: List contents of directories
+- run_type_check: Run TypeScript type checking to catch type errors early
+- run_build: Run Vite build to validate the project compiles correctly
 - execute_code: Execute code in Python, JavaScript, or Go
 - get_project_context: Retrieve project metadata and structure
 
@@ -80,13 +84,12 @@ You have access to the following tools:
 - Follow the step instruction exactly
 - Use tools appropriately for each task
 - When generating code:
-  * Ensure syntax is correct for the target language
+  * Ensure syntax is correct for the target language/framework
   * Include necessary imports and dependencies
-  * Add comments for clarity
-  * Follow language-specific best practices
+  * Follow the framework constraints specified below
   * Consider the project context and integrate with existing code structure
 - When writing files:
-  * Use appropriate file paths
+  * Use appropriate file paths per the framework's directory structure
   * Ensure content is properly formatted
   * Verify the operation succeeded
 - When reading files:
@@ -101,7 +104,8 @@ You have access to the following tools:
 - If a step cannot be completed, explain why clearly
 - Always verify your work when possible
 - Generate production-quality code, not pseudocode
-- Use project context to ensure generated code integrates properly`),
+- Use project context to ensure generated code integrates properly
+{framework_constraints}`),
 	schema.UserMessage(`## OBJECTIVE
 {input}
 
@@ -197,10 +201,18 @@ func generateExecutorInput(ctx context.Context, execCtx *planexecute.ExecutionCo
 
 	// Build the prompt parameters
 	promptParams := map[string]any{
-		"input":          userInputStr,
-		"plan":           string(planContent),
-		"executed_steps": executedStepsStr,
-		"step":           currentStep,
+		"input":                userInputStr,
+		"plan":                 string(planContent),
+		"executed_steps":       executedStepsStr,
+		"step":                 currentStep,
+		"framework_constraints": "",
+	}
+
+	// Inject framework-specific constraints if known
+	if fw, ok := agentcontext.GetTypedContextParams[string](ctx, "framework"); ok && fw != "" {
+		if constraint := agenttools.GetFrameworkPromptConstraints(fw); constraint != "" {
+			promptParams["framework_constraints"] = "\n\n" + constraint
+		}
 	}
 
 	// Add project context if available

@@ -35,38 +35,71 @@ type ChatModelConfig struct {
 	TopP        *float32
 }
 
-// NewChatModel creates a new chat model instance supporting OpenAI-compatible APIs
-// Configuration is loaded from environment variables with fallback to provided config
+// ModelRole identifies which role a model serves in the agent pipeline.
+type ModelRole string
+
+const (
+	// ModelRolePlanner is used by IntentClassifier, Planner, and Replanner.
+	// Configured via PLANNER_* env vars (defaults to OPENAI_* for backward compat).
+	ModelRolePlanner ModelRole = "planner"
+
+	// ModelRoleExecutor is used by the Executor for code generation.
+	// Configured via CLAUDE_* env vars (defaults to OPENAI_* for backward compat).
+	ModelRoleExecutor ModelRole = "executor"
+)
+
+// NewChatModel creates a new chat model instance supporting OpenAI-compatible APIs.
+// Configuration is loaded from environment variables with fallback to provided config.
 func NewChatModel(ctx context.Context, config *ChatModelConfig) (model.ToolCallingChatModel, error) {
+	return newChatModelForRole(ctx, config, "OPENAI")
+}
+
+// NewPlannerModel creates the model used by IntentClassifier, Planner, and Replanner.
+// Reads PLANNER_* env vars, falls back to OPENAI_* for backward compatibility.
+func NewPlannerModel(ctx context.Context, config *ChatModelConfig) (model.ToolCallingChatModel, error) {
 	if config == nil {
 		config = &ChatModelConfig{}
 	}
+	// Try PLANNER_* prefix first, then fall back to OPENAI_*
+	apiKey := firstNonEmpty(os.Getenv("PLANNER_API_KEY"), os.Getenv("OPENAI_API_KEY"), config.APIKey)
+	baseURL := firstNonEmpty(os.Getenv("PLANNER_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), config.BaseURL)
+	modelName := firstNonEmpty(os.Getenv("PLANNER_MODEL"), os.Getenv("OPENAI_MODEL"), config.Model)
+	return buildChatModel(ctx, apiKey, baseURL, modelName, config)
+}
 
-	// Load configuration from environment variables (primary source)
-	baseURL := os.Getenv("OPENAI_BASE_URL")
-	if baseURL == "" {
-		baseURL = config.BaseURL
+// NewExecutorModel creates the model used by the Executor for code generation.
+// Reads CLAUDE_* env vars, falls back to OPENAI_* for backward compatibility.
+func NewExecutorModel(ctx context.Context, config *ChatModelConfig) (model.ToolCallingChatModel, error) {
+	if config == nil {
+		config = &ChatModelConfig{}
 	}
+	// Try CLAUDE_* prefix first, then fall back to OPENAI_*
+	apiKey := firstNonEmpty(os.Getenv("CLAUDE_API_KEY"), os.Getenv("OPENAI_API_KEY"), config.APIKey)
+	baseURL := firstNonEmpty(os.Getenv("CLAUDE_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), config.BaseURL)
+	modelName := firstNonEmpty(os.Getenv("CLAUDE_MODEL"), os.Getenv("OPENAI_MODEL"), config.Model)
+	return buildChatModel(ctx, apiKey, baseURL, modelName, config)
+}
 
-	apiKey := os.Getenv("OPENAI_API_KEY")
+// newChatModelForRole is a helper that reads the given env prefix (e.g. "OPENAI").
+func newChatModelForRole(ctx context.Context, config *ChatModelConfig, prefix string) (model.ToolCallingChatModel, error) {
+	if config == nil {
+		config = &ChatModelConfig{}
+	}
+	apiKey := firstNonEmpty(os.Getenv(prefix+"_API_KEY"), config.APIKey)
+	baseURL := firstNonEmpty(os.Getenv(prefix+"_BASE_URL"), config.BaseURL)
+	modelName := firstNonEmpty(os.Getenv(prefix+"_MODEL"), config.Model)
+	return buildChatModel(ctx, apiKey, baseURL, modelName, config)
+}
+
+// buildChatModel constructs an openai-compatible ChatModel from resolved credentials.
+func buildChatModel(ctx context.Context, apiKey, baseURL, modelName string, config *ChatModelConfig) (model.ToolCallingChatModel, error) {
 	if apiKey == "" {
-		apiKey = config.APIKey
-	}
-
-	modelName := os.Getenv("OPENAI_MODEL")
-	if modelName == "" {
-		modelName = config.Model
-	}
-
-	// Validate required configuration
-	if apiKey == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY is required")
+		return nil, fmt.Errorf("API key is required (set OPENAI_API_KEY, PLANNER_API_KEY, or CLAUDE_API_KEY)")
 	}
 	if modelName == "" {
-		return nil, fmt.Errorf("OPENAI_MODEL is required")
+		return nil, fmt.Errorf("model name is required (set OPENAI_MODEL, PLANNER_MODEL, or CLAUDE_MODEL)")
 	}
 
-	// Build OpenAI configuration
 	openaiConfig := &openai.ChatModelConfig{
 		APIKey:      apiKey,
 		BaseURL:     baseURL,
@@ -76,13 +109,21 @@ func NewChatModel(ctx context.Context, config *ChatModelConfig) (model.ToolCalli
 		TopP:        config.TopP,
 	}
 
-	// Create and return the chat model
 	cm, err := openai.NewChatModel(ctx, openaiConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create chat model: %w", err)
 	}
-
 	return cm, nil
+}
+
+// firstNonEmpty returns the first non-empty string from the candidates.
+func firstNonEmpty(candidates ...string) string {
+	for _, s := range candidates {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // ChatModelOption is a functional option for configuring chat model
