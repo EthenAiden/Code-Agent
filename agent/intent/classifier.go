@@ -72,16 +72,25 @@ func (ic *IntentClassifier) Classify(ctx context.Context, query string) (*Intent
 func (ic *IntentClassifier) classifyByKeywords(query string) *IntentClassification {
 	queryLower := strings.ToLower(query)
 
-	// Keywords for code generation
+	// Keywords for code generation (English + Chinese)
 	generateKeywords := []string{
+		// English
 		"create", "generate", "build", "implement", "write", "develop",
 		"make", "construct", "scaffold", "initialize", "setup", "add new",
+		// Chinese
+		"生成", "创建", "实现", "开发", "写一个", "做一个", "建一个",
+		"帮我做", "帮我写", "帮我创建", "帮我生成", "帮我实现", "帮我开发",
+		"新建", "搭建", "构建", "初始化",
 	}
 
-	// Keywords for code modification
+	// Keywords for code modification (English + Chinese)
 	modifyKeywords := []string{
+		// English
 		"modify", "change", "update", "fix", "refactor", "edit",
 		"alter", "adjust", "improve", "optimize", "rewrite", "revise",
+		// Chinese
+		"修改", "更新", "修复", "优化", "重构", "编辑",
+		"调整", "改一下", "改成", "帮我改", "修一下", "完善",
 	}
 
 	// Check for generate code keywords
@@ -133,9 +142,14 @@ func (ic *IntentClassifier) classifyByKeywords(query string) *IntentClassificati
 // containsCodeIndicators checks if the query contains code-related indicators
 func containsCodeIndicators(query string) bool {
 	codeIndicators := []string{
+		// English
 		"code", "function", "class", "method", "variable", "file",
 		"api", "endpoint", "component", "module", "package", "library",
 		"script", "program", "application", "service", "interface",
+		// Chinese
+		"代码", "函数", "组件", "页面", "应用", "程序", "功能",
+		"计数器", "计时器", "表单", "列表", "登录", "注册",
+		"react", "vue", "typescript", "javascript",
 	}
 
 	for _, indicator := range codeIndicators {

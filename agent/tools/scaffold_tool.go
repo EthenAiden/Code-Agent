@@ -32,6 +32,8 @@ type FrameworkSpec struct {
 	// AppFile is the root component.
 	AppFileName string
 	AppContent  string
+	// ExtraFiles holds additional config files (key = rel path, value = content).
+	ExtraFiles map[string]string
 }
 
 // frameworkSpecs holds the scaffold templates for each supported framework.
@@ -140,7 +142,7 @@ createApp(App).mount('#app')
 
 	"react": {
 		Name:  "react",
-		Label: "React 18 (Vite + TypeScript + Hooks)",
+		Label: "React 18 (Vite + TypeScript + Tailwind CSS)",
 		PackageJSON: `{
   "name": "react-app",
   "version": "0.0.1",
@@ -159,6 +161,9 @@ createApp(App).mount('#app')
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.0.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
     "typescript": "^5.3.0",
     "vite": "^5.0.0"
   }
@@ -218,6 +223,7 @@ export default defineConfig({
 		EntryContent: `import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
+import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
@@ -230,19 +236,44 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
 function App(): React.JSX.Element {
   return (
-    <div className="App">
-      <h1>Hello React!</h1>
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <h1 className="text-3xl font-bold text-gray-900">Hello React!</h1>
     </div>
   )
 }
 
 export default App
 `,
+		ExtraFiles: map[string]string{
+			"tailwind.config.js": `/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+`,
+			"postcss.config.js": `export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+`,
+			"src/index.css": `@tailwind base;
+@tailwind components;
+@tailwind utilities;
+`,
+		},
 	},
 
 	"react-native": {
 		Name:  "react-native",
-		Label: "React Native (Expo + TypeScript)",
+		Label: "React Native (Expo + NativeWind + TypeScript)",
 		PackageJSON: `{
   "name": "react-native-app",
   "version": "1.0.0",
@@ -252,18 +283,23 @@ export default App
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "dev": "expo start --web",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "expo": "~51.0.0",
     "expo-router": "~3.5.0",
     "expo-status-bar": "~1.12.1",
+    "nativewind": "^4.0.1",
     "react": "18.2.0",
-    "react-native": "0.74.0"
+    "react-native": "0.74.0",
+    "react-native-safe-area-context": "4.10.1",
+    "react-native-screens": "~3.31.1"
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",
     "@types/react": "~18.2.0",
+    "tailwindcss": "^3.4.0",
     "typescript": "^5.3.0"
   }
 }`,
@@ -275,46 +311,73 @@ export default App
       "@/*": ["./src/*"]
     }
   },
-  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.d.ts", "expo-env.d.ts"]
+  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.d.ts", "expo-env.d.ts", "nativewind-env.d.ts"]
 }
 `,
 		EntryFileName: "app/_layout.tsx",
 		EntryContent: `import { Stack } from 'expo-router'
+import '../global.css'
 
 export default function RootLayout() {
   return (
-    <Stack>
-      <Stack.Screen name="index" options={{ title: 'Home' }} />
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="index" />
     </Stack>
   )
 }
 `,
 		AppFileName: "app/index.tsx",
-		AppContent: `import { StyleSheet, Text, View } from 'react-native'
+		AppContent: `import { View, Text } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
 
 export default function HomeScreen() {
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Hello React Native!</Text>
+    <View className="flex-1 items-center justify-center bg-white">
+      <Text className="text-3xl font-bold text-gray-900">Hello React Native!</Text>
       <StatusBar style="auto" />
     </View>
   )
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-})
 `,
+		ExtraFiles: map[string]string{
+			"babel.config.js": `module.exports = function (api) {
+  api.cache(true)
+  return {
+    presets: [
+      ['babel-preset-expo', { jsxImportSource: 'nativewind' }],
+    ],
+    plugins: ['nativewind/babel'],
+  }
+}
+`,
+			"tailwind.config.js": `/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    "./app/**/*.{js,jsx,ts,tsx}",
+    "./src/**/*.{js,jsx,ts,tsx}",
+    "./components/**/*.{js,jsx,ts,tsx}",
+  ],
+  presets: [require('nativewind/preset')],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+`,
+			"global.css": `@tailwind base;
+@tailwind components;
+@tailwind utilities;
+`,
+			"nativewind-env.d.ts": `/// <reference types="nativewind/types" />
+`,
+			"metro.config.js": `const { getDefaultConfig } = require('expo/metro-config')
+const { withNativeWind } = require('nativewind/metro')
+
+const config = getDefaultConfig(__dirname)
+
+module.exports = withNativeWind(config, { input: './global.css' })
+`,
+		},
 	},
 }
 
@@ -384,29 +447,30 @@ You MUST follow these rules for ALL generated code:
 - DO NOT use React.createClass.
 `
 	case "react-native":
-		return `## Framework Constraints: React Native (Expo + TypeScript)
+		return `## Framework Constraints: React Native (Expo + NativeWind + TypeScript)
 
 You MUST follow these rules for ALL generated code:
-- Framework: React Native with Expo SDK (expo-router for navigation).
+- Framework: React Native with Expo SDK 51. expo-router for file-based navigation.
+- Styling: NativeWind v4 (Tailwind CSS for React Native). Use className="..." on ALL components — NEVER use StyleSheet.create() or inline style={{}} objects. NativeWind is already configured in babel.config.js and global.css.
 - Language: TypeScript only. All components use .tsx extension.
-- Navigation: expo-router (file-based routing in app/ directory). No React Navigation unless user asks.
-- File extensions: .tsx for components, .ts for pure logic.
+- Navigation: expo-router (file-based routing under app/ directory).
 - Directory structure:
   app/            (expo-router pages and layouts)
-    _layout.tsx   (root layout)
+    _layout.tsx   (root layout — already imports global.css)
     index.tsx     (home screen)
   src/
-    components/   (shared reusable components)
-    hooks/        (custom hooks, prefix with "use")
-    store/        (state management if needed)
+    components/   (shared reusable UI components)
+    hooks/        (custom hooks, prefix "use")
+    store/        (Zustand or Context if needed)
     types/        (TypeScript type definitions)
     utils/        (utility functions)
-- Use StyleSheet.create() for styles. No inline style objects without StyleSheet.
-- Import UI primitives from 'react-native': View, Text, TouchableOpacity, ScrollView, etc.
-- NEVER import web-only APIs (document, window, localStorage).
+- Import UI primitives from 'react-native': View, Text, TouchableOpacity, ScrollView, Pressable, FlatList, Image, TextInput.
+- For gestures/interactions: onPress (not onClick). For long press: onLongPress.
+- NEVER use: document, window, localStorage, CSS files (except global.css which is already there), <div>, <span>, <p>, <h1> etc.
+- Platform-specific: use Platform.OS === 'ios'/'android'/'web' for differences.
 - Type-check command: "tsc --noEmit"
 - DO NOT use class components.
-- Platform-specific code: use Platform.OS checks or .ios.tsx / .android.tsx extensions.
+- ALWAYS import React from 'react' when using JSX hooks.
 `
 	}
 	return ""
@@ -494,6 +558,9 @@ func (s *scaffoldProjectTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		"index.html":     spec.IndexHTML,
 		spec.EntryFileName: spec.EntryContent,
 		spec.AppFileName:   spec.AppContent,
+	}
+	for k, v := range spec.ExtraFiles {
+		files[k] = v
 	}
 
 	for relPath, content := range files {

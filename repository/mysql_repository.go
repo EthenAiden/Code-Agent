@@ -23,51 +23,6 @@ func NewMySQLSessionPersistenceRepository(db *sql.DB) *MySQLSessionPersistenceRe
 	return &MySQLSessionPersistenceRepository{db: db}
 }
 
-// initSchema creates the database schema (sessions and messages tables)
-func (spr *MySQLSessionPersistenceRepository) initSchema(ctx context.Context) error {
-	// Create sessions table
-	sessionsTable := `
-	CREATE TABLE IF NOT EXISTS sessions (
-		id CHAR(36) PRIMARY KEY COMMENT 'UUID v4 conversation_id',
-		user_id CHAR(36) NOT NULL COMMENT 'UUID v4 user identifier for session isolation',
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-		version INT DEFAULT 1 COMMENT 'Version field for optimistic locking',
-		INDEX idx_user_id (user_id),
-		INDEX idx_created_at (created_at),
-		UNIQUE KEY uk_user_session (user_id, id)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
-
-	// Create messages table
-	messagesTable := `
-	CREATE TABLE IF NOT EXISTS messages (
-		id BIGINT AUTO_INCREMENT PRIMARY KEY,
-		conversation_id CHAR(36) NOT NULL,
-		role ENUM('user', 'assistant') NOT NULL,
-		content TEXT NOT NULL,
-		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		message_index INT NOT NULL,
-		status ENUM('pending', 'completed', 'failed') DEFAULT 'pending' COMMENT 'Message status for streaming reliability',
-		INDEX idx_conversation_index (conversation_id, message_index),
-		INDEX idx_timestamp (timestamp),
-		INDEX idx_status (status),
-		FOREIGN KEY (conversation_id) REFERENCES sessions(id) ON DELETE CASCADE
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
-
-	// Execute schema creation
-	_, err := spr.db.ExecContext(ctx, sessionsTable)
-	if err != nil {
-		return fmt.Errorf("failed to create sessions table: %w", err)
-	}
-
-	_, err = spr.db.ExecContext(ctx, messagesTable)
-	if err != nil {
-		return fmt.Errorf("failed to create messages table: %w", err)
-	}
-
-	return nil
-}
-
 // retryWithBackoff executes a function with retry and exponential backoff
 func (spr *MySQLSessionPersistenceRepository) retryWithBackoff(ctx context.Context, maxRetries int, fn func() error) error {
 	var err error
@@ -128,19 +83,23 @@ func NewRepositoryError(errorCode string, err error) *RepositoryError {
 	}
 }
 
-// InsertSession creates a new session in MySQL
-func (spr *MySQLSessionPersistenceRepository) InsertSession(ctx context.Context, conversationID string, userID string) error {
+// InsertSession creates a new project in MySQL
+// Note: The table uses 'uuid' column for the external project_id (UUID string)
+// and 'id' column as internal auto-increment primary key
+func (spr *MySQLSessionPersistenceRepository) InsertSession(ctx context.Context, projectID string, userID string) error {
 	return spr.retryWithBackoff(ctx, 3, func() error {
-		query := `INSERT INTO sessions (id, user_id, framework, version) VALUES (?, ?, '', 1)`
-		_, err := spr.db.ExecContext(ctx, query, conversationID, userID)
+		query := `INSERT INTO projects (uuid, user_id, name, version) VALUES (?, ?, 'New Project', 1)`
+		_, err := spr.db.ExecContext(ctx, query, projectID, userID)
 		if err != nil {
-			return fmt.Errorf("failed to insert session: %w", err)
+			return fmt.Errorf("failed to insert project: %w", err)
 		}
 		return nil
 	})
 }
 
 // InsertMessage stores a message in MySQL
+// Note: messages.project_id is a BIGINT foreign key to projects.id (internal ID),
+// but we receive UUID (projects.uuid). We need to join to get the internal ID.
 func (spr *MySQLSessionPersistenceRepository) InsertMessage(ctx context.Context, msg model.Message) error {
 	return spr.retryWithBackoff(ctx, 3, func() error {
 		// Use transaction for atomicity
@@ -150,19 +109,27 @@ func (spr *MySQLSessionPersistenceRepository) InsertMessage(ctx context.Context,
 		}
 		defer tx.Rollback()
 
+		// Get internal project ID from UUID
+		var internalProjectID int64
+		err = tx.QueryRowContext(ctx, `
+			SELECT id FROM projects WHERE uuid = ?`, msg.ConversationID).Scan(&internalProjectID)
+		if err != nil {
+			return fmt.Errorf("failed to get project internal id: %w", err)
+		}
+
 		// Get next message index with lock
 		var nextIndex int
 		err = tx.QueryRowContext(ctx, `
 			SELECT COALESCE(MAX(message_index), -1) + 1 
 			FROM messages 
-			WHERE conversation_id = ? FOR UPDATE`, msg.ConversationID).Scan(&nextIndex)
+			WHERE project_id = ? FOR UPDATE`, internalProjectID).Scan(&nextIndex)
 		if err != nil {
 			return fmt.Errorf("failed to get next message index: %w", err)
 		}
 
 		// Insert message
-		query := `INSERT INTO messages (conversation_id, role, content, timestamp, message_index, status) VALUES (?, ?, ?, ?, ?, ?)`
-		_, err = tx.ExecContext(ctx, query, msg.ConversationID, msg.Role, msg.Content, msg.Timestamp, nextIndex, msg.Status)
+		query := `INSERT INTO messages (project_id, role, content, timestamp, message_index, status) VALUES (?, ?, ?, ?, ?, ?)`
+		_, err = tx.ExecContext(ctx, query, internalProjectID, msg.Role, msg.Content, msg.Timestamp, nextIndex, msg.Status)
 		if err != nil {
 			return fmt.Errorf("failed to insert message: %w", err)
 		}
@@ -176,18 +143,20 @@ func (spr *MySQLSessionPersistenceRepository) InsertMessage(ctx context.Context,
 	})
 }
 
-// GetSessionMessages retrieves all messages for a session
-func (spr *MySQLSessionPersistenceRepository) GetSessionMessages(ctx context.Context, conversationID string, userID string) ([]model.Message, error) {
+// GetSessionMessages retrieves all messages for a project
+// Note: projectID is UUID, need to join with projects table
+func (spr *MySQLSessionPersistenceRepository) GetSessionMessages(ctx context.Context, projectID string, userID string) ([]model.Message, error) {
 	var messages []model.Message
 
 	err := spr.retryWithBackoff(ctx, 3, func() error {
 		query := `
-			SELECT id, conversation_id, role, content, timestamp, message_index, status 
-			FROM messages 
-			WHERE conversation_id = ? AND status != 'failed'
-			ORDER BY message_index ASC`
+			SELECT m.id, p.uuid, m.role, m.content, m.timestamp, m.message_index, m.status 
+			FROM messages m
+			INNER JOIN projects p ON m.project_id = p.id
+			WHERE p.uuid = ? AND p.user_id = ? AND m.status != 'failed'
+			ORDER BY m.message_index ASC`
 
-		rows, err := spr.db.QueryContext(ctx, query, conversationID)
+		rows, err := spr.db.QueryContext(ctx, query, projectID, userID)
 		if err != nil {
 			return fmt.Errorf("failed to query messages: %w", err)
 		}
@@ -216,34 +185,27 @@ func (spr *MySQLSessionPersistenceRepository) GetSessionMessages(ctx context.Con
 	return messages, nil
 }
 
-// ListSessions retrieves session summaries with pagination
+// ListSessions retrieves project summaries with pagination
 func (spr *MySQLSessionPersistenceRepository) ListSessions(ctx context.Context, userID string, limit, offset int) ([]model.SessionSummary, error) {
 	var summaries []model.SessionSummary
 
 	err := spr.retryWithBackoff(ctx, 3, func() error {
-		// Get total count
-		var total int
-		err := spr.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM sessions WHERE user_id = ?`, userID).Scan(&total)
-		if err != nil {
-			return fmt.Errorf("failed to get total count: %w", err)
-		}
-
-		// Get paginated sessions with summary data
+		// Get paginated projects with summary data
+		// Use uuid as the external project_id
 		query := `
-			SELECT s.id, 
-				   COALESCE(MAX(m.timestamp), s.created_at) as last_message_timestamp,
+			SELECT p.uuid, 
+				   COALESCE(MAX(m.timestamp), p.created_at) as last_message_timestamp,
 				   COUNT(m.id) as message_count
-			FROM sessions s
-			LEFT JOIN messages m ON s.id = m.conversation_id AND m.status != 'failed'
-			WHERE s.user_id = ?
-			GROUP BY s.id
-			ORDER BY s.created_at DESC
+			FROM projects p
+			LEFT JOIN messages m ON p.id = m.project_id AND m.status != 'failed'
+			WHERE p.user_id = ? AND p.is_deleted = FALSE
+			GROUP BY p.id, p.uuid
+			ORDER BY p.created_at DESC
 			LIMIT ? OFFSET ?`
 
 		rows, err := spr.db.QueryContext(ctx, query, userID, limit, offset)
 		if err != nil {
-			return fmt.Errorf("failed to query sessions: %w", err)
+			return fmt.Errorf("failed to query projects: %w", err)
 		}
 		defer rows.Close()
 
@@ -251,13 +213,13 @@ func (spr *MySQLSessionPersistenceRepository) ListSessions(ctx context.Context, 
 			var summary model.SessionSummary
 			err := rows.Scan(&summary.ConversationID, &summary.LastMessageTimestamp, &summary.MessageCount)
 			if err != nil {
-				return fmt.Errorf("failed to scan session summary: %w", err)
+				return fmt.Errorf("failed to scan project summary: %w", err)
 			}
 			summaries = append(summaries, summary)
 		}
 
 		if err = rows.Err(); err != nil {
-			return fmt.Errorf("error iterating sessions: %w", err)
+			return fmt.Errorf("error iterating projects: %w", err)
 		}
 
 		return nil
@@ -270,47 +232,45 @@ func (spr *MySQLSessionPersistenceRepository) ListSessions(ctx context.Context, 
 	return summaries, nil
 }
 
-// DeleteSession removes a session and all its messages
-func (spr *MySQLSessionPersistenceRepository) DeleteSession(ctx context.Context, conversationID string, userID string) error {
+// DeleteSession removes a project and all its messages
+func (spr *MySQLSessionPersistenceRepository) DeleteSession(ctx context.Context, projectID string, userID string) error {
 	return spr.retryWithBackoff(ctx, 3, func() error {
-		// Delete messages first (foreign key will handle cascade)
-		_, err := spr.db.ExecContext(ctx, `
-			DELETE m FROM messages m
-			INNER JOIN sessions s ON m.conversation_id = s.id
-			WHERE s.id = ? AND s.user_id = ?`, conversationID, userID)
+		// Delete project (cascade will handle messages)
+		result, err := spr.db.ExecContext(ctx, `
+			DELETE FROM projects WHERE uuid = ? AND user_id = ?`, projectID, userID)
 		if err != nil {
-			return fmt.Errorf("failed to delete messages: %w", err)
+			return fmt.Errorf("failed to delete project: %w", err)
 		}
 
-		// Delete session
-		_, err = spr.db.ExecContext(ctx, `
-			DELETE FROM sessions WHERE id = ? AND user_id = ?`, conversationID, userID)
+		rowsAffected, err := result.RowsAffected()
 		if err != nil {
-			return fmt.Errorf("failed to delete session: %w", err)
+			return fmt.Errorf("failed to get rows affected: %w", err)
+		}
+
+		if rowsAffected == 0 {
+			return fmt.Errorf("project not found or not owned by user")
 		}
 
 		return nil
 	})
 }
 
-// GetSessionDetails retrieves session metadata
-func (spr *MySQLSessionPersistenceRepository) GetSessionDetails(ctx context.Context, conversationID string, userID string) (*model.SessionDetails, error) {
+// GetSessionDetails retrieves project metadata
+func (spr *MySQLSessionPersistenceRepository) GetSessionDetails(ctx context.Context, projectID string, userID string) (*model.SessionDetails, error) {
 	var details model.SessionDetails
 	var lastMessageAt sql.NullTime
 
 	err := spr.retryWithBackoff(ctx, 3, func() error {
 		query := `
-			SELECT s.id,
-				   COALESCE(s.framework, '') as framework,
-				   COALESCE((SELECT COUNT(*) FROM messages m WHERE m.conversation_id = s.id AND m.status != 'failed'), 0) as message_count,
-				   s.created_at,
-				   (SELECT MAX(m.timestamp) FROM messages m WHERE m.conversation_id = s.id AND m.status != 'failed') as last_message_at
-			FROM sessions s
-			WHERE s.id = ? AND s.user_id = ?`
+			SELECT p.uuid,
+				   COALESCE((SELECT COUNT(*) FROM messages m WHERE m.project_id = p.id AND m.status != 'failed'), 0) as message_count,
+				   p.created_at,
+				   (SELECT MAX(m.timestamp) FROM messages m WHERE m.project_id = p.id AND m.status != 'failed') as last_message_at
+			FROM projects p
+			WHERE p.uuid = ? AND p.user_id = ?`
 
-		err := spr.db.QueryRowContext(ctx, query, conversationID, userID).Scan(
+		err := spr.db.QueryRowContext(ctx, query, projectID, userID).Scan(
 			&details.ConversationID,
-			&details.Framework,
 			&details.MessageCount,
 			&details.CreatedAt,
 			&lastMessageAt,
@@ -318,9 +278,9 @@ func (spr *MySQLSessionPersistenceRepository) GetSessionDetails(ctx context.Cont
 
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("session not found: %w", err)
+				return fmt.Errorf("project not found: %w", err)
 			}
-			return fmt.Errorf("failed to get session details: %w", err)
+			return fmt.Errorf("failed to get project details: %w", err)
 		}
 
 		// Convert sql.NullTime to *time.Time
@@ -340,12 +300,12 @@ func (spr *MySQLSessionPersistenceRepository) GetSessionDetails(ctx context.Cont
 	return &details, nil
 }
 
-// SetFramework stores the chosen framework for a session.
-func (spr *MySQLSessionPersistenceRepository) SetFramework(ctx context.Context, conversationID string, userID string, framework string) error {
+// SetFramework stores the chosen framework for a project.
+func (spr *MySQLSessionPersistenceRepository) SetFramework(ctx context.Context, projectID string, userID string, framework string) error {
 	return spr.retryWithBackoff(ctx, 3, func() error {
 		_, err := spr.db.ExecContext(ctx,
-			`UPDATE sessions SET framework = ? WHERE id = ? AND user_id = ?`,
-			framework, conversationID, userID)
+			`UPDATE projects SET description = ? WHERE uuid = ? AND user_id = ?`,
+			framework, projectID, userID)
 		if err != nil {
 			return fmt.Errorf("failed to set framework: %w", err)
 		}
@@ -353,15 +313,15 @@ func (spr *MySQLSessionPersistenceRepository) SetFramework(ctx context.Context, 
 	})
 }
 
-// SessionExists checks if a session exists
-func (spr *MySQLSessionPersistenceRepository) SessionExists(ctx context.Context, conversationID string, userID string) (bool, error) {
+// SessionExists checks if a project exists
+func (spr *MySQLSessionPersistenceRepository) SessionExists(ctx context.Context, projectID string, userID string) (bool, error) {
 	var exists bool
 
 	err := spr.retryWithBackoff(ctx, 3, func() error {
 		err := spr.db.QueryRowContext(ctx, `
-			SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ? AND user_id = ?)`, conversationID, userID).Scan(&exists)
+			SELECT EXISTS(SELECT 1 FROM projects WHERE uuid = ? AND user_id = ?)`, projectID, userID).Scan(&exists)
 		if err != nil {
-			return fmt.Errorf("failed to check session existence: %w", err)
+			return fmt.Errorf("failed to check project existence: %w", err)
 		}
 		return nil
 	})
@@ -374,17 +334,17 @@ func (spr *MySQLSessionPersistenceRepository) SessionExists(ctx context.Context,
 }
 
 // GetSessionVersion retrieves the current version for optimistic locking
-func (spr *MySQLSessionPersistenceRepository) GetSessionVersion(ctx context.Context, conversationID string, userID string) (int, error) {
+func (spr *MySQLSessionPersistenceRepository) GetSessionVersion(ctx context.Context, projectID string, userID string) (int, error) {
 	var version int
 
 	err := spr.retryWithBackoff(ctx, 3, func() error {
 		err := spr.db.QueryRowContext(ctx, `
-			SELECT version FROM sessions WHERE id = ? AND user_id = ?`, conversationID, userID).Scan(&version)
+			SELECT version FROM projects WHERE uuid = ? AND user_id = ?`, projectID, userID).Scan(&version)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("session not found: %w", err)
+				return fmt.Errorf("project not found: %w", err)
 			}
-			return fmt.Errorf("failed to get session version: %w", err)
+			return fmt.Errorf("failed to get project version: %w", err)
 		}
 		return nil
 	})
@@ -396,14 +356,14 @@ func (spr *MySQLSessionPersistenceRepository) GetSessionVersion(ctx context.Cont
 	return version, nil
 }
 
-// UpdateSessionVersion updates the session version for optimistic locking
-func (spr *MySQLSessionPersistenceRepository) UpdateSessionVersion(ctx context.Context, conversationID string, userID string, expectedVersion int) error {
+// UpdateSessionVersion updates the project version for optimistic locking
+func (spr *MySQLSessionPersistenceRepository) UpdateSessionVersion(ctx context.Context, projectID string, userID string, expectedVersion int) error {
 	return spr.retryWithBackoff(ctx, 3, func() error {
 		result, err := spr.db.ExecContext(ctx, `
-			UPDATE sessions SET version = version + 1 WHERE id = ? AND user_id = ? AND version = ?`,
-			conversationID, userID, expectedVersion)
+			UPDATE projects SET version = version + 1 WHERE uuid = ? AND user_id = ? AND version = ?`,
+			projectID, userID, expectedVersion)
 		if err != nil {
-			return fmt.Errorf("failed to update session version: %w", err)
+			return fmt.Errorf("failed to update project version: %w", err)
 		}
 
 		rowsAffected, err := result.RowsAffected()
@@ -419,15 +379,16 @@ func (spr *MySQLSessionPersistenceRepository) UpdateSessionVersion(ctx context.C
 	})
 }
 
-// GetNextMessageIndex gets the next message index for a session
-func (spr *MySQLSessionPersistenceRepository) GetNextMessageIndex(ctx context.Context, conversationID string, userID string) (int, error) {
+// GetNextMessageIndex gets the next message index for a project
+func (spr *MySQLSessionPersistenceRepository) GetNextMessageIndex(ctx context.Context, projectID string, userID string) (int, error) {
 	var nextIndex int
 
 	err := spr.retryWithBackoff(ctx, 3, func() error {
 		err := spr.db.QueryRowContext(ctx, `
-			SELECT COALESCE(MAX(message_index), -1) + 1 
-			FROM messages 
-			WHERE conversation_id = ?`, conversationID).Scan(&nextIndex)
+			SELECT COALESCE(MAX(m.message_index), -1) + 1 
+			FROM messages m
+			INNER JOIN projects p ON m.project_id = p.id
+			WHERE p.uuid = ?`, projectID).Scan(&nextIndex)
 		if err != nil {
 			return fmt.Errorf("failed to get next message index: %w", err)
 		}
@@ -441,12 +402,13 @@ func (spr *MySQLSessionPersistenceRepository) GetNextMessageIndex(ctx context.Co
 	return nextIndex, nil
 }
 
-// CleanupFailedMessages removes failed messages from a session
-func (spr *MySQLSessionPersistenceRepository) CleanupFailedMessages(ctx context.Context, conversationID string, userID string) error {
+// CleanupFailedMessages removes failed messages from a project
+func (spr *MySQLSessionPersistenceRepository) CleanupFailedMessages(ctx context.Context, projectID string, userID string) error {
 	return spr.retryWithBackoff(ctx, 3, func() error {
 		_, err := spr.db.ExecContext(ctx, `
-			DELETE FROM messages 
-			WHERE conversation_id = ? AND status = 'failed'`, conversationID)
+			DELETE m FROM messages m
+			INNER JOIN projects p ON m.project_id = p.id
+			WHERE p.uuid = ? AND m.status = 'failed'`, projectID)
 		if err != nil {
 			return fmt.Errorf("failed to cleanup failed messages: %w", err)
 		}
@@ -455,23 +417,26 @@ func (spr *MySQLSessionPersistenceRepository) CleanupFailedMessages(ctx context.
 }
 
 // UpdateMessageStatus updates the status of a message
-func (spr *MySQLSessionPersistenceRepository) UpdateMessageStatus(ctx context.Context, conversationID string, messageIndex int, status string) error {
+func (spr *MySQLSessionPersistenceRepository) UpdateMessageStatus(ctx context.Context, projectID string, messageIndex int, status string) error {
 	return spr.retryWithBackoff(ctx, 3, func() error {
-		// Get message ID first
-		var messageID int
-		err := spr.db.QueryRowContext(ctx, `
-			SELECT id FROM messages WHERE conversation_id = ? AND message_index = ?`,
-			conversationID, messageIndex).Scan(&messageID)
-		if err != nil {
-			return fmt.Errorf("failed to get message: %w", err)
-		}
-
-		// Update status
-		_, err = spr.db.ExecContext(ctx, `
-			UPDATE messages SET status = ? WHERE id = ?`,
-			status, messageID)
+		// Update message status by joining with projects table
+		result, err := spr.db.ExecContext(ctx, `
+			UPDATE messages m
+			INNER JOIN projects p ON m.project_id = p.id
+			SET m.status = ?
+			WHERE p.uuid = ? AND m.message_index = ?`,
+			status, projectID, messageIndex)
 		if err != nil {
 			return fmt.Errorf("failed to update message status: %w", err)
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to get rows affected: %w", err)
+		}
+
+		if rowsAffected == 0 {
+			return fmt.Errorf("message not found")
 		}
 
 		return nil

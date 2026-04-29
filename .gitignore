@@ -39,3 +39,7 @@ coverage/
 
 # Go modules
 go.sum
+
+*.md
+
+workspace/

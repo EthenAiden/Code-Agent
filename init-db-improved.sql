@@ -267,7 +267,7 @@ SELECT
     ROUND(((data_length + index_length) / 1024 / 1024), 2) AS size_mb,
     table_rows
 FROM information_schema.TABLES
-WHERE table_schema = 'agent_sessions'
+WHERE table_schema = 'agent_service'
 ORDER BY (data_length + index_length) DESC;
 
 SELECT 'Database schema with improved primary key strategy created successfully!' AS message;
