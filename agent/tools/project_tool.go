@@ -80,6 +80,7 @@ type ProjectManagerInterface interface {
 	ListSessions(ctx context.Context, userID string, limit, offset int) ([]model.SessionSummary, error)
 	DeleteSession(ctx context.Context, conversationID string, userID string) error
 	SetFramework(ctx context.Context, conversationID string, userID string, framework string) error
+	SetName(ctx context.Context, conversationID string, userID string, name string) error
 }
 
 // getProjectContextTool implements the project context retrieval tool

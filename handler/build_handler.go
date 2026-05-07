@@ -218,8 +218,19 @@ func (h *BuildHandler) startDevServer(projectID, projectDir, userID, framework s
 		containerID = strings.TrimSpace(string(out))
 	}
 
+	// Wait until Vite is actually serving before marking the server as "running".
+	// npm install inside the container can take 30-120 s; docker run -d returns
+	// immediately after the container is created, not after the process is ready.
+	fmt.Printf("Waiting for dev server to become ready at %s...\n", devServer.URL)
+	if waitErr := h.waitForDevServer(devServer.URL, 3*time.Minute); waitErr != nil {
+		devServer.Status = "error"
+		fmt.Printf("Dev server for project %s failed to become ready: %v\n", projectID, waitErr)
+		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+		return
+	}
+
 	devServer.Status = "running"
-	fmt.Printf("Docker dev server started for project %s at %s (container: %s)\n", projectID, devServer.URL, containerName)
+	fmt.Printf("Docker dev server ready for project %s at %s (container: %s)\n", projectID, devServer.URL, containerName)
 
 	// Wait for the container to stop (blocks until exit)
 	waitCmd := exec.Command("docker", "wait", containerName)
@@ -257,6 +268,22 @@ func (h *BuildHandler) findAvailablePort(startPort int) int {
 		}
 		port++
 	}
+}
+
+// waitForDevServer polls the given URL until it responds with any HTTP status
+// or the timeout is exceeded. Returns nil when the server is ready.
+func (h *BuildHandler) waitForDevServer(url string, timeout time.Duration) error {
+	client := &http.Client{Timeout: 3 * time.Second}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			return nil
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for %s after %s", url, timeout)
 }
 
 // GetPreviewURL handles GET /api/v1/projects/:project_id/preview

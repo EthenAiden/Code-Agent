@@ -148,14 +148,19 @@ func (h *ProjectHandler) ListSessions(ctx context.Context, c *app.RequestContext
 	// Convert SessionSummary to ProjectSummary (they're compatible)
 	projectSummaries := make([]model.ProjectSummary, len(summaries))
 	for i, s := range summaries {
+		name := s.Name
+		if name == "" || name == "New Project" {
+			name = "未命名项目"
+		}
 		projectSummaries[i] = model.ProjectSummary{
 			ProjectID:            s.ConversationID,
-			Name:                 "", // Will be populated from first message
+			Name:                 name,
 			Description:          "",
 			Icon:                 "💬",
 			Thumbnail:            "bg-gradient-to-br from-gray-100 to-gray-200",
 			LastMessageTimestamp: s.LastMessageTimestamp,
 			MessageCount:         s.MessageCount,
+			UpdatedAt:            s.UpdatedAt,
 		}
 	}
 

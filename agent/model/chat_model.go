@@ -17,13 +17,54 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"os"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 )
+
+// loggingTransport logs every HTTP request and response for debugging model calls.
+type loggingTransport struct {
+	base http.RoundTripper
+}
+
+func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Log request
+	var reqBody string
+	if req.Body != nil {
+		b, _ := io.ReadAll(req.Body)
+		req.Body = io.NopCloser(bytes.NewReader(b))
+		if len(b) > 500 {
+			reqBody = string(b[:500]) + "...(truncated)"
+		} else {
+			reqBody = string(b)
+		}
+	}
+	log.Printf("[ModelHTTP] --> %s %s\n  body: %s", req.Method, req.URL, reqBody)
+
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		log.Printf("[ModelHTTP] <-- ERROR: %v", err)
+		return nil, err
+	}
+
+	// Log response
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+	snippet := string(respBody)
+	if len(snippet) > 500 {
+		snippet = snippet[:500] + "...(truncated)"
+	}
+	log.Printf("[ModelHTTP] <-- %s\n  body: %s", resp.Status, snippet)
+
+	return resp, nil
+}
 
 // ChatModelConfig holds configuration for creating a chat model
 type ChatModelConfig struct {
@@ -100,6 +141,13 @@ func buildChatModel(ctx context.Context, apiKey, baseURL, modelName string, conf
 		return nil, fmt.Errorf("model name is required (set OPENAI_MODEL, PLANNER_MODEL, or CLAUDE_MODEL)")
 	}
 
+	log.Printf("[ModelInit] baseURL=%q model=%q apiKey=%s...%s",
+		baseURL, modelName, apiKey[:min(8, len(apiKey))], apiKey[max(0, len(apiKey)-4):])
+
+	httpClient := &http.Client{
+		Transport: &loggingTransport{base: http.DefaultTransport},
+	}
+
 	openaiConfig := &openai.ChatModelConfig{
 		APIKey:      apiKey,
 		BaseURL:     baseURL,
@@ -107,6 +155,7 @@ func buildChatModel(ctx context.Context, apiKey, baseURL, modelName string, conf
 		Temperature: config.Temperature,
 		MaxTokens:   config.MaxTokens,
 		TopP:        config.TopP,
+		HTTPClient:  httpClient,
 	}
 
 	cm, err := openai.NewChatModel(ctx, openaiConfig)
@@ -114,6 +163,20 @@ func buildChatModel(ctx context.Context, apiKey, baseURL, modelName string, conf
 		return nil, fmt.Errorf("failed to create chat model: %w", err)
 	}
 	return cm, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // firstNonEmpty returns the first non-empty string from the candidates.

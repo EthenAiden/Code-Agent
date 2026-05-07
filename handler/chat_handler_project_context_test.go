@@ -43,6 +43,16 @@ func (m *MockProjectManager) DeleteSession(ctx context.Context, conversationID s
 	return args.Error(0)
 }
 
+func (m *MockProjectManager) SetFramework(ctx context.Context, conversationID string, userID string, framework string) error {
+	args := m.Called(ctx, conversationID, userID, framework)
+	return args.Error(0)
+}
+
+func (m *MockProjectManager) SetName(ctx context.Context, conversationID string, userID string, name string) error {
+	args := m.Called(ctx, conversationID, userID, name)
+	return args.Error(0)
+}
+
 // Ensure MockProjectManager implements tools.ProjectManagerInterface
 var _ tools.ProjectManagerInterface = (*MockProjectManager)(nil)
 

@@ -1,0 +1,95 @@
+## Framework Constraints: React 18 (Vite + TypeScript + Tailwind + shadcn/ui)
+
+You MUST follow these rules for ALL generated code:
+
+### Framework & Language
+- Framework: React 18 with functional components and Hooks. NEVER use class components.
+- Language: TypeScript only. All components use .tsx extension.
+- Build tool: Vite. Config file: vite.config.ts.
+- Module system: ES Modules (import/export). No CommonJS.
+- File extensions: .tsx for React components, .ts for pure TypeScript.
+
+### Directory Structure
+```
+src/
+  components/
+    ui/          (shadcn/ui base components — pre-installed)
+    [feature]/   (feature-specific components)
+  pages/         (route-level components)
+  hooks/         (custom React hooks, prefix with "use")
+  context/       (React Context providers)
+  store/         (state management if needed, e.g. Zustand)
+  assets/        (static assets)
+  types/         (TypeScript type definitions)
+  utils/         (utility functions)
+  lib/
+    utils.ts     (cn() helper from shadcn)
+  index.css      (Tailwind + HSL design tokens — MUST be customized)
+App.tsx          (root component)
+main.tsx         (entry point)
+tailwind.config.ts (MUST extend with semantic tokens)
+```
+
+### TypeScript Rules
+- Return type annotation for components: React.JSX.Element or React.FC<Props>.
+- Type-check command: "tsc --noEmit"
+- Props must be typed with an interface or type alias.
+- DO NOT use class components, HOCs, or deprecated lifecycle methods.
+- DO NOT use React.createClass.
+
+### Design System (MANDATORY — always customize these files)
+
+**src/index.css** — Define ALL colors as HSL CSS custom properties. Example:
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --primary: 262 83% 58%;
+    --primary-foreground: 0 0% 100%;
+    /* ... more tokens ... */
+    --gradient-primary: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--accent)));
+  }
+}
+```
+
+**tailwind.config.ts** — Extend with semantic color tokens:
+```ts
+colors: {
+  background: 'hsl(var(--background))',
+  foreground: 'hsl(var(--foreground))',
+  primary: { DEFAULT: 'hsl(var(--primary))', foreground: 'hsl(var(--primary-foreground))' },
+  // ...
+}
+```
+
+### shadcn/ui Components (pre-installed — use them!)
+Import from '@/components/ui/...':
+```tsx
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+```
+
+The `cn()` helper is at `@/lib/utils`:
+```tsx
+import { cn } from '@/lib/utils'
+```
+
+### Color Rules (CRITICAL)
+- NEVER use raw Tailwind color classes like text-white, bg-black, text-blue-500
+- ALWAYS use semantic tokens: text-foreground, bg-background, text-primary, bg-card, etc.
+- Define your design palette in index.css as HSL vars, then reference via tailwind.config.ts
+
+### Visual Quality Requirements
+- Every project MUST have a non-generic color palette (choose theme-appropriate hues)
+- Include gradient backgrounds, hover transitions, and subtle shadows
+- Use responsive layouts (mobile-first with sm: md: lg: breakpoints)
+- Semantic HTML: <main>, <section>, <nav>, <header>, <footer>

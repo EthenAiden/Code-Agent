@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	agentcontext "github.com/ethen-aiden/code-agent/agent/context"
+	"github.com/ethen-aiden/code-agent/prompts"
 )
 
 // FrameworkSpec describes the structure and constraints for a supported frontend framework.
@@ -142,24 +145,35 @@ createApp(App).mount('#app')
 
 	"react": {
 		Name:  "react",
-		Label: "React 18 (Vite + TypeScript + Tailwind CSS)",
+		Label: "React 18 (Vite + TypeScript + Tailwind CSS + shadcn/ui)",
 		PackageJSON: `{
   "name": "react-app",
   "version": "0.0.1",
   "private": true,
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
     "preview": "vite preview",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.23.0",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.0",
+    "tailwind-merge": "^2.3.0",
+    "lucide-react": "^0.395.0",
+    "@radix-ui/react-slot": "^1.0.2",
+    "@radix-ui/react-dialog": "^1.0.5",
+    "@radix-ui/react-tabs": "^1.0.4",
+    "@radix-ui/react-label": "^2.0.2",
+    "@radix-ui/react-separator": "^1.0.3"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
+    "@types/react-router-dom": "^5.3.3",
     "@vitejs/plugin-react": "^4.0.0",
     "autoprefixer": "^10.4.0",
     "postcss": "^8.4.0",
@@ -245,17 +259,55 @@ function App(): React.JSX.Element {
 export default App
 `,
 		ExtraFiles: map[string]string{
-			"tailwind.config.js": `/** @type {import('tailwindcss').Config} */
+			"tailwind.config.ts": `import type { Config } from 'tailwindcss'
+
 export default {
   content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
+    './index.html',
+    './src/**/*.{ts,tsx}',
   ],
   theme: {
-    extend: {},
+    extend: {
+      colors: {
+        background: 'hsl(var(--background))',
+        foreground: 'hsl(var(--foreground))',
+        primary: {
+          DEFAULT: 'hsl(var(--primary))',
+          foreground: 'hsl(var(--primary-foreground))',
+          glow: 'hsl(var(--primary-glow))',
+        },
+        secondary: {
+          DEFAULT: 'hsl(var(--secondary))',
+          foreground: 'hsl(var(--secondary-foreground))',
+        },
+        accent: {
+          DEFAULT: 'hsl(var(--accent))',
+          foreground: 'hsl(var(--accent-foreground))',
+        },
+        muted: {
+          DEFAULT: 'hsl(var(--muted))',
+          foreground: 'hsl(var(--muted-foreground))',
+        },
+        card: {
+          DEFAULT: 'hsl(var(--card))',
+          foreground: 'hsl(var(--card-foreground))',
+        },
+        border: 'hsl(var(--border))',
+        input: 'hsl(var(--input))',
+        ring: 'hsl(var(--ring))',
+      },
+      borderRadius: {
+        lg: 'var(--radius)',
+        md: 'calc(var(--radius) - 2px)',
+        sm: 'calc(var(--radius) - 4px)',
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+      },
+    },
   },
   plugins: [],
-}
+} satisfies Config
 `,
 			"postcss.config.js": `export default {
   plugins: {
@@ -267,6 +319,197 @@ export default {
 			"src/index.css": `@tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --primary: 262 83% 58%;
+    --primary-foreground: 0 0% 100%;
+    --primary-glow: 270 70% 75%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --accent: 316 70% 58%;
+    --accent-foreground: 0 0% 100%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 262 83% 58%;
+    --radius: 0.5rem;
+    --gradient-primary: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--accent)));
+    --gradient-subtle: linear-gradient(180deg, hsl(var(--background)), hsl(var(--muted)));
+    --gradient-hero: linear-gradient(135deg, hsl(var(--primary) / 0.12), hsl(var(--accent) / 0.08));
+    --shadow-elegant: 0 10px 30px -10px hsl(var(--primary) / 0.3);
+    --shadow-glow: 0 0 40px hsl(var(--primary-glow) / 0.4);
+    --shadow-card: 0 4px 20px -4px hsl(var(--foreground) / 0.08);
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+}
+
+@layer utilities {
+  .gradient-primary { background: var(--gradient-primary); }
+  .gradient-subtle { background: var(--gradient-subtle); }
+  .gradient-hero { background: var(--gradient-hero); }
+  .shadow-elegant { box-shadow: var(--shadow-elegant); }
+  .shadow-glow { box-shadow: var(--shadow-glow); }
+  .shadow-card { box-shadow: var(--shadow-card); }
+  .transition-smooth { transition: var(--transition-smooth); }
+  .transition-bounce { transition: var(--transition-bounce); }
+}
+`,
+			"src/lib/utils.ts": `import { type ClassValue, clsx } from 'clsx'
+import { twMerge } from 'tailwind-merge'
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+`,
+			"src/components/ui/button.tsx": `import * as React from 'react'
+import { Slot } from '@radix-ui/react-slot'
+import { cva, type VariantProps } from 'class-variance-authority'
+import { cn } from '@/lib/utils'
+
+const buttonVariants = cva(
+  'inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-smooth focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
+  {
+    variants: {
+      variant: {
+        default: 'bg-primary text-primary-foreground shadow hover:opacity-90',
+        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
+        outline: 'border border-border bg-background hover:bg-muted hover:text-foreground',
+        ghost: 'hover:bg-muted hover:text-foreground',
+        link: 'text-primary underline-offset-4 hover:underline',
+        hero: 'gradient-primary text-primary-foreground shadow-elegant hover:shadow-glow transition-bounce',
+      },
+      size: {
+        default: 'h-9 px-4 py-2',
+        sm: 'h-8 rounded-md px-3 text-xs',
+        lg: 'h-11 rounded-md px-8 text-base',
+        xl: 'h-14 rounded-lg px-10 text-lg',
+        icon: 'h-9 w-9',
+      },
+    },
+    defaultVariants: { variant: 'default', size: 'default' },
+  }
+)
+
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
+  asChild?: boolean
+}
+
+const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, variant, size, asChild = false, ...props }, ref) => {
+    const Comp = asChild ? Slot : 'button'
+    return <Comp className={cn(buttonVariants({ variant, size, className }))} ref={ref} {...props} />
+  }
+)
+Button.displayName = 'Button'
+
+export { Button, buttonVariants }
+`,
+			"src/components/ui/card.tsx": `import * as React from 'react'
+import { cn } from '@/lib/utils'
+
+const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  ({ className, ...props }, ref) => (
+    <div ref={ref} className={cn('rounded-lg border border-border bg-card text-card-foreground shadow-card', className)} {...props} />
+  )
+)
+Card.displayName = 'Card'
+
+const CardHeader = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  ({ className, ...props }, ref) => (
+    <div ref={ref} className={cn('flex flex-col space-y-1.5 p-6', className)} {...props} />
+  )
+)
+CardHeader.displayName = 'CardHeader'
+
+const CardTitle = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HTMLHeadingElement>>(
+  ({ className, ...props }, ref) => (
+    <h3 ref={ref} className={cn('font-semibold leading-none tracking-tight text-foreground', className)} {...props} />
+  )
+)
+CardTitle.displayName = 'CardTitle'
+
+const CardDescription = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HTMLParagraphElement>>(
+  ({ className, ...props }, ref) => (
+    <p ref={ref} className={cn('text-sm text-muted-foreground', className)} {...props} />
+  )
+)
+CardDescription.displayName = 'CardDescription'
+
+const CardContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  ({ className, ...props }, ref) => (
+    <div ref={ref} className={cn('p-6 pt-0', className)} {...props} />
+  )
+)
+CardContent.displayName = 'CardContent'
+
+const CardFooter = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  ({ className, ...props }, ref) => (
+    <div ref={ref} className={cn('flex items-center p-6 pt-0', className)} {...props} />
+  )
+)
+CardFooter.displayName = 'CardFooter'
+
+export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent }
+`,
+			"src/components/ui/input.tsx": `import * as React from 'react'
+import { cn } from '@/lib/utils'
+
+export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {}
+
+const Input = React.forwardRef<HTMLInputElement, InputProps>(
+  ({ className, type, ...props }, ref) => (
+    <input
+      type={type}
+      className={cn(
+        'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm text-foreground shadow-sm transition-smooth placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+        className
+      )}
+      ref={ref}
+      {...props}
+    />
+  )
+)
+Input.displayName = 'Input'
+
+export { Input }
+`,
+			"src/components/ui/badge.tsx": `import * as React from 'react'
+import { cva, type VariantProps } from 'class-variance-authority'
+import { cn } from '@/lib/utils'
+
+const badgeVariants = cva(
+  'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-smooth',
+  {
+    variants: {
+      variant: {
+        default: 'border-transparent bg-primary text-primary-foreground',
+        secondary: 'border-transparent bg-secondary text-secondary-foreground',
+        accent: 'border-transparent bg-accent text-accent-foreground',
+        outline: 'border-border text-foreground',
+      },
+    },
+    defaultVariants: { variant: 'default' },
+  }
+)
+
+export interface BadgeProps
+  extends React.HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof badgeVariants> {}
+
+function Badge({ className, variant, ...props }: BadgeProps) {
+  return <div className={cn(badgeVariants({ variant }), className)} {...props} />
+}
+
+export { Badge, badgeVariants }
 `,
 		},
 	},
@@ -390,88 +633,13 @@ func GetFrameworkSpec(framework string) *FrameworkSpec {
 // GetFrameworkPromptConstraints returns the system prompt section describing framework-specific
 // constraints to be injected into the Planner and Executor system prompts.
 func GetFrameworkPromptConstraints(framework string) string {
-	spec := frameworkSpecs[framework]
-	if spec == nil {
-		return ""
-	}
 	switch framework {
 	case "vue3":
-		return `## Framework Constraints: Vue 3 (Vite + TypeScript)
-
-You MUST follow these rules for ALL generated code:
-- Framework: Vue 3 with Composition API (<script setup lang="ts">). NEVER use Options API.
-- Language: TypeScript only. No plain JavaScript files.
-- Build tool: Vite. Config file: vite.config.ts.
-- Module system: ES Modules (import/export). No CommonJS (require/module.exports).
-- File extensions: .vue for components, .ts for logic, .tsx only when JSX is needed.
-- Directory structure:
-  src/
-    components/   (shared reusable components)
-    views/ or pages/  (route-level components)
-    composables/  (reusable Composition API hooks, prefix with "use")
-    stores/       (Pinia stores if state management is needed)
-    assets/       (static assets)
-    router/       (Vue Router config if routing is needed)
-    types/        (TypeScript type definitions)
-  App.vue         (root component)
-  main.ts         (entry point)
-- Type-check command: "vue-tsc --noEmit"
-- DO NOT use class components, mixins, or Vue 2 patterns.
-- DO NOT use @Options decorator or defineComponent with options object unless strictly necessary.
-`
+		return prompts.Load("framework_vue3.txt")
 	case "react":
-		return `## Framework Constraints: React 18 (Vite + TypeScript)
-
-You MUST follow these rules for ALL generated code:
-- Framework: React 18 with functional components and Hooks. NEVER use class components.
-- Language: TypeScript only. All components use .tsx extension.
-- Build tool: Vite. Config file: vite.config.ts.
-- Module system: ES Modules (import/export). No CommonJS.
-- File extensions: .tsx for React components, .ts for pure TypeScript.
-- Directory structure:
-  src/
-    components/   (shared reusable components)
-    pages/        (route-level components)
-    hooks/        (custom React hooks, prefix with "use")
-    context/      (React Context providers)
-    store/        (state management if needed, e.g. Zustand)
-    assets/       (static assets)
-    types/        (TypeScript type definitions)
-    utils/        (utility functions)
-  App.tsx         (root component)
-  main.tsx        (entry point)
-- Return type annotation for components: React.JSX.Element or React.FC<Props>.
-- Type-check command: "tsc --noEmit"
-- Props must be typed with an interface or type alias.
-- DO NOT use class components, HOCs, or deprecated lifecycle methods.
-- DO NOT use React.createClass.
-`
+		return prompts.Load("framework_react.txt")
 	case "react-native":
-		return `## Framework Constraints: React Native (Expo + NativeWind + TypeScript)
-
-You MUST follow these rules for ALL generated code:
-- Framework: React Native with Expo SDK 51. expo-router for file-based navigation.
-- Styling: NativeWind v4 (Tailwind CSS for React Native). Use className="..." on ALL components — NEVER use StyleSheet.create() or inline style={{}} objects. NativeWind is already configured in babel.config.js and global.css.
-- Language: TypeScript only. All components use .tsx extension.
-- Navigation: expo-router (file-based routing under app/ directory).
-- Directory structure:
-  app/            (expo-router pages and layouts)
-    _layout.tsx   (root layout — already imports global.css)
-    index.tsx     (home screen)
-  src/
-    components/   (shared reusable UI components)
-    hooks/        (custom hooks, prefix "use")
-    store/        (Zustand or Context if needed)
-    types/        (TypeScript type definitions)
-    utils/        (utility functions)
-- Import UI primitives from 'react-native': View, Text, TouchableOpacity, ScrollView, Pressable, FlatList, Image, TextInput.
-- For gestures/interactions: onPress (not onClick). For long press: onLongPress.
-- NEVER use: document, window, localStorage, CSS files (except global.css which is already there), <div>, <span>, <p>, <h1> etc.
-- Platform-specific: use Platform.OS === 'ios'/'android'/'web' for differences.
-- Type-check command: "tsc --noEmit"
-- DO NOT use class components.
-- ALWAYS import React from 'react' when using JSX hooks.
-`
+		return prompts.Load("framework_react_native.txt")
 	}
 	return ""
 }
@@ -569,8 +737,24 @@ func (s *scaffoldProjectTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		}
 	}
 
+	installOut := runNpmInstall(root)
 	return fmt.Sprintf(
-		"success: scaffolded %s project at %s\nFiles created: %v\nNext step: run 'npm install' in the project directory.",
-		spec.Label, root, written,
+		"success: scaffolded %s project at %s\nFiles created: %v\nInstalling dependencies...\n%s",
+		spec.Label, root, written, installOut,
 	), nil
+}
+
+// runNpmInstall runs "npm install --prefer-offline" in dir and returns a short status string.
+func runNpmInstall(dir string) string {
+	npmBin := "npm"
+	if runtime.GOOS == "windows" {
+		npmBin = "npm.cmd"
+	}
+	cmd := exec.Command(npmBin, "install", "--prefer-offline")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("npm install failed: %v\n%s", err, decodeOutput(out))
+	}
+	return "npm install completed"
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/ethen-aiden/code-agent/agent/planner"
 	"github.com/ethen-aiden/code-agent/agent/replanner"
 	"github.com/ethen-aiden/code-agent/agent/tools"
+	"github.com/ethen-aiden/code-agent/prompts"
 )
 
 // PlanExecuteConfig holds configuration for the Plan-Execute agent
@@ -139,10 +140,13 @@ func NewPlanExecuteAgent(ctx context.Context, config *PlanExecuteConfig) (adk.Ag
 
 // createPlannerAgent creates the Planner agent (uses PlannerModel / GPT)
 func createPlannerAgent(ctx context.Context, config *PlanExecuteConfig) (adk.Agent, error) {
-	// Create planner using planexecute.NewPlanner
+	// Use ToolCallingChatModel path so the planner is forced to call create_plan tool
+	// and return structured JSON in ToolCalls[0].Function.Arguments.
+	// ChatModelWithFormattedOutput path parses msg.Content directly, which fails when
+	// the model streams reasoning/text before the JSON (common with GLM/Claude-style models).
 	plannerAgent, err := planexecute.NewPlanner(ctx, &planexecute.PlannerConfig{
-		ChatModelWithFormattedOutput: config.plannerModel(),
-		GenInputFn:                   generatePlannerInput,
+		ToolCallingChatModel: config.plannerModel(),
+		GenInputFn:           generatePlannerInput,
 		NewPlan: func(ctx context.Context) planexecute.Plan {
 			return &planner.Plan{}
 		},
@@ -201,7 +205,7 @@ func createReplannerAgent(ctx context.Context, config *PlanExecuteConfig) (adk.A
 
 // generatePlannerInput generates the input messages for the planner agent
 func generatePlannerInput(ctx context.Context, userInput []adk.Message) ([]adk.Message, error) {
-	// Format user input
+	// Format user input (current turn only)
 	var userInputStr string
 	for i, msg := range userInput {
 		if i > 0 {
@@ -227,65 +231,14 @@ func generatePlannerInput(ctx context.Context, userInput []adk.Message) ([]adk.M
 		frameworkConstraint = tools.GetFrameworkPromptConstraints(fw)
 	}
 
-	// Create planning prompt with project context
-	systemPrompt := `You are an expert planner for a frontend code generation assistant. Your goal is to understand user requirements and break them down into a clear, step-by-step plan.
+	// Retrieve prior conversation history so the planner understands what was
+	// already built in previous turns (e.g. "modify the counter to add a reset button").
+	conversationHistory := ""
+	if h, ok := agentcontext.GetTypedContextParams[string](ctx, "conversation_history"); ok && h != "" {
+		conversationHistory = h
+	}
 
-## Your Responsibilities
-
-1. Analyze the user's request to determine the ultimate objective
-2. Break down the request into granular, sequential, and executable steps
-3. Ensure each step is actionable and can be executed independently
-4. Order steps logically so each step builds on previous ones
-5. Keep steps focused and specific
-
-## Guidelines for Creating Steps
-
-- Each step should be a single, clear action
-- Steps should be sequential and ordered logically
-- Use specific, actionable language (e.g., "Create file X with content Y")
-- Avoid vague instructions (e.g., "Do something with the code")
-- Consider dependencies between steps
-- Include necessary context in each step description
-- For a NEW project (no existing files), the FIRST step must always be: call scaffold_project tool to initialize the framework boilerplate
-
-## Available Tools
-
-The executor has access to the following tools:
-- scaffold_project: Initialize a new project with framework boilerplate (MUST be first step for new projects)
-- read_file: Read content from files in the project
-- write_file: Write content to files in the project
-- list_directory: List contents of directories
-- run_type_check: Run TypeScript type checking (tsc --noEmit or vue-tsc --noEmit)
-- run_build: Run Vite build to validate the project compiles correctly
-- execute_code: Execute code in Python, JavaScript, or Go
-- get_project_context: Retrieve project metadata and structure
-
-## Output Format
-
-You must respond by calling the create_plan tool with a JSON object containing:
-{
-  "goal": "Brief description of the overall objective",
-  "steps": [
-    {
-      "id": 1,
-      "description": "Clear, actionable instruction for this step",
-      "executed": false
-    },
-    {
-      "id": 2,
-      "description": "Next step instruction",
-      "executed": false
-    }
-  ]
-}
-
-## Important Notes
-
-- Call the create_plan tool with the plan JSON
-- Ensure all steps are granular and unambiguous
-- Number steps sequentially starting from 1
-- Set "executed" to false for all steps
-- Keep the goal concise but descriptive`
+	systemPrompt := prompts.Load("system_planner.txt")
 
 	// Inject framework constraints if known
 	if frameworkConstraint != "" {
@@ -300,11 +253,17 @@ You must respond by calling the create_plan tool with a JSON object containing:
 		systemPrompt += "Use this context to create plans that integrate with the existing project structure."
 	}
 
-	systemPrompt += "\n\nNow, analyze the user's request and create an execution plan."
+	// Build user message: prepend conversation history so the planner knows
+	// what already exists before deciding what to modify/add.
+	userContent := userInputStr
+	if conversationHistory != "" {
+		userContent = "## Prior conversation\n" + conversationHistory +
+			"\n## Current request\n" + userInputStr
+	}
 
 	messages := []*schema.Message{
 		schema.SystemMessage(systemPrompt),
-		schema.UserMessage(userInputStr),
+		schema.UserMessage(userContent),
 	}
 
 	return messages, nil

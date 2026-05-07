@@ -24,6 +24,7 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/ethen-aiden/code-agent/prompts"
 )
 
 // IntentType represents the type of user intent
@@ -192,27 +193,7 @@ func (ic *IntentClassifier) classifyByLLM(ctx context.Context, query string) (*I
 
 // buildClassificationPrompt creates the prompt for intent classification
 func buildClassificationPrompt(query string) string {
-	return `You are an intent classifier for a code generation assistant. Your task is to classify user queries into one of three categories:
-
-1. "chat" - Normal conversation, questions, or requests that don't involve code generation or modification
-2. "generate_code" - Requests to create, generate, build, or implement new code
-3. "modify_code" - Requests to modify, change, update, fix, or refactor existing code
-
-Analyze the user query and respond with a JSON object in the following format:
-{
-  "intent": "chat" | "generate_code" | "modify_code",
-  "confidence": 0.0-1.0,
-  "reasoning": "Brief explanation of why this intent was chosen"
-}
-
-Guidelines:
-- If the query contains keywords like "create", "generate", "build", "implement", classify as "generate_code"
-- If the query contains keywords like "modify", "change", "update", "fix", "refactor", classify as "modify_code"
-- If the query is a general question, conversation, or doesn't involve code work, classify as "chat"
-- Provide a confidence score between 0.0 and 1.0
-- Keep the reasoning brief and clear
-
-Respond ONLY with the JSON object, no additional text.`
+	return prompts.Load("system_intent_classifier.txt")
 }
 
 // parseClassificationResponse parses the LLM response into IntentClassification

@@ -34,15 +34,21 @@ type Step struct {
 
 	// Result stores the execution result for this step
 	Result string `json:"result,omitempty"`
+
+	// Status indicates the current status of the step (pending, running, done, error)
+	Status string `json:"status,omitempty"`
 }
 
 // Plan represents a structured execution plan with sequential steps
 type Plan struct {
-	// Steps is the list of steps to execute in order
-	Steps []*Step `json:"steps"`
-
 	// Goal is the overall objective of the plan
 	Goal string `json:"goal"`
+
+	// Thinking contains the agent's reasoning process for creating this plan
+	Thinking string `json:"thinking,omitempty"`
+
+	// Steps is the list of steps to execute in order
+	Steps []*Step `json:"steps"`
 }
 
 // NewPlan creates a new Plan with the given goal and steps
@@ -50,6 +56,15 @@ func NewPlan(goal string, steps []*Step) *Plan {
 	return &Plan{
 		Goal:  goal,
 		Steps: steps,
+	}
+}
+
+// NewPlanWithThinking creates a new Plan with goal, thinking, and steps
+func NewPlanWithThinking(goal string, thinking string, steps []*Step) *Plan {
+	return &Plan{
+		Goal:     goal,
+		Thinking: thinking,
+		Steps:    steps,
 	}
 }
 
@@ -143,19 +158,58 @@ func (p *Plan) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling for Plan
+// UnmarshalJSON implements custom JSON unmarshaling for Plan.
+// It handles two formats:
+//  1. Eino ToolCallingChatModel path: {"steps": ["step1", "step2", ...]}  ([]string)
+//  2. Custom tool path:               {"goal": "...", "steps": [{"id":1,"description":"..."},...]}
 func (p *Plan) UnmarshalJSON(data []byte) error {
-	type Alias Plan
-	aux := &struct {
-		*Alias
-	}{
-		Alias: (*Alias)(p),
+	// First try the full struct form ({"goal":..., "steps":[{"id":...}]}).
+	type fullPlan struct {
+		Goal     string  `json:"goal"`
+		Thinking string  `json:"thinking,omitempty"`
+		Steps    []*Step `json:"steps"`
+	}
+	var fp fullPlan
+	if err := json.Unmarshal(data, &fp); err == nil && len(fp.Steps) > 0 {
+		p.Goal = fp.Goal
+		p.Thinking = fp.Thinking
+		p.Steps = fp.Steps
+		return nil
 	}
 
-	if err := json.Unmarshal(data, &aux); err != nil {
+	// Fallback: Eino's defaultPlan format — {"steps": ["string1", "string2"]}
+	// Also handle when there's a "goal" key alongside string steps.
+	var raw struct {
+		Goal  string            `json:"goal"`
+		Steps []json.RawMessage `json:"steps"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("failed to unmarshal plan: %w", err)
 	}
 
+	p.Goal = raw.Goal
+	p.Steps = make([]*Step, 0, len(raw.Steps))
+	for i, s := range raw.Steps {
+		// Try object form first
+		var step Step
+		if err := json.Unmarshal(s, &step); err == nil && step.Description != "" {
+			if step.ID == 0 {
+				step.ID = i + 1
+			}
+			p.Steps = append(p.Steps, &step)
+			continue
+		}
+		// Fall back to plain string
+		var desc string
+		if err := json.Unmarshal(s, &desc); err != nil {
+			return fmt.Errorf("failed to unmarshal plan step %d: %w", i, err)
+		}
+		p.Steps = append(p.Steps, &Step{
+			ID:          i + 1,
+			Description: desc,
+			Executed:    false,
+		})
+	}
 	return nil
 }
 

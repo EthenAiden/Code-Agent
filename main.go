@@ -10,6 +10,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/ethen-aiden/code-agent/agent/intent"
 	agentmodel "github.com/ethen-aiden/code-agent/agent/model"
+	"github.com/ethen-aiden/code-agent/agent/planexecute"
+	"github.com/ethen-aiden/code-agent/agent/sequential"
 	"github.com/ethen-aiden/code-agent/agent/tools"
 	"github.com/ethen-aiden/code-agent/config"
 	"github.com/ethen-aiden/code-agent/handler"
@@ -67,6 +69,31 @@ func initializeTools(projectManager *service.ProjectManager, projectRoot string)
 	return allTools
 }
 
+// buildSequentialAgent wires together PlanExecuteAgent → SequentialAgent.
+func buildSequentialAgent(
+	ctx context.Context,
+	chatModel einomodel.ToolCallingChatModel,
+	executorModel einomodel.ToolCallingChatModel,
+	classifier *intent.IntentClassifier,
+	allTools []tool.BaseTool,
+	_ string, // projectRoot reserved for future use
+) (*sequential.SequentialAgent, error) {
+	peAgent, err := planexecute.NewPlanExecuteAgent(ctx, &planexecute.PlanExecuteConfig{
+		PlannerModel:  chatModel,
+		ExecutorModel: executorModel,
+		Tools:         allTools,
+		MaxIterations: 20,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sequential.NewSequentialAgent(ctx, &sequential.SequentialAgentConfig{
+		IntentClassifier: classifier,
+		PlanExecuteAgent: peAgent,
+		ChatModel:        chatModel,
+	})
+}
+
 // getProjectRoot returns the project root directory for file operations
 func getProjectRoot() string {
 	projectRoot := os.Getenv("PROJECT_ROOT")
@@ -117,14 +144,21 @@ func main() {
 	projectRoot := getProjectRoot()
 	buildHandler := handler.NewBuildHandler(projectRoot)
 
+	allTools := initializeTools(projectManager, projectRoot)
+
+	seqAgent, err := buildSequentialAgent(ctx, chatModel, executorModel, intentClassifier, allTools, projectRoot)
+	if err != nil {
+		log.Fatalf("failed to build sequential agent: %v", err)
+	}
+	log.Println("✓ SequentialAgent initialized")
+
 	sessionHandler := handler.NewProjectHandler(projectManager)
 	chatHandler := handler.NewChatHandler(
 		messageHistoryService,
 		projectManager,
 		buildHandler,
-		intentClassifier,
+		seqAgent,
 		chatModel,
-		executorModel,
 		projectRoot,
 	)
 	fileHandler := handler.NewFileHandler(projectRoot)

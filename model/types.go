@@ -30,7 +30,8 @@ type Message struct {
 	Content        string    `json:"content" db:"content"`
 	Timestamp      time.Time `json:"timestamp" db:"timestamp"`
 	MessageIndex   int       `json:"message_index" db:"message_index"`
-	Status         string    `json:"status" db:"status"` // "pending", "completed", "failed"
+	Status         string    `json:"status" db:"status"`     // "pending", "completed", "failed"
+	Metadata       string    `json:"metadata" db:"metadata"` // JSON array of agent_event objects
 }
 
 // ProjectSummary represents a summary of a project for listing
@@ -48,6 +49,8 @@ type ProjectSummary struct {
 // SessionSummary is kept for backward compatibility
 type SessionSummary struct {
 	ConversationID       string    `json:"conversation_id"`
+	Name                 string    `json:"name"`
+	UpdatedAt            time.Time `json:"updated_at"`
 	LastMessageTimestamp time.Time `json:"last_message_timestamp"`
 	MessageCount         int       `json:"message_count"`
 }

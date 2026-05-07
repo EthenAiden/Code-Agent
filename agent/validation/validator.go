@@ -1,7 +1,9 @@
 package validation
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -58,19 +60,47 @@ func toDockerMount(absPath string) string {
 
 // runInDocker executes a shell command inside a temporary node:20-alpine container
 // with the projectDir mounted at /app. It returns the combined stdout+stderr output.
+// timeoutSec caps how long the container is allowed to run.
 func runInDocker(absProjectDir string, shellCmd string, timeoutSec int) (string, error) {
-	mountPath := toDockerMount(absProjectDir)
+	// Always resolve to an absolute path — callers may pass a relative path.
+	resolved, err := filepath.Abs(absProjectDir)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve project dir %q: %w", absProjectDir, err)
+	}
+	mountPath := toDockerMount(resolved)
 
-	ctx := fmt.Sprintf("timeout %d sh -c '%s'", timeoutSec, shellCmd)
-	cmd := exec.Command("docker", "run", "--rm",
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
 		"-v", fmt.Sprintf("%s:/app", mountPath),
 		"-w", "/app",
 		"node:20-alpine",
-		"sh", "-c", ctx,
+		"sh", "-c", shellCmd,
 	)
 
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	out, _ := cmd.CombinedOutput()
+	output := string(out)
+	snippet := output
+	if len(snippet) > 500 {
+		snippet = snippet[:500]
+	}
+
+	var runErr error
+	if ctx.Err() != nil {
+		runErr = fmt.Errorf("timeout after %ds", timeoutSec)
+	} else if cmd.ProcessState != nil && !cmd.ProcessState.Success() {
+		runErr = fmt.Errorf("exit code %d", cmd.ProcessState.ExitCode())
+	}
+	log.Printf("[Docker] dir=%s\ncmd=%q\noutput=%s\nerr=%v", resolved, shellCmd[:min(len(shellCmd), 80)], snippet, runErr)
+	return output, runErr
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // parseTSCErrors parses tsc --noEmit output into structured FileError list.
@@ -110,26 +140,25 @@ func parseBuildErrors(output string) []FileError {
 	return errs
 }
 
+// RunInstall runs npm install --prefer-offline in the project directory via Docker.
+// Call this once before RunTSC/RunBuild so node_modules is populated.
+func RunInstall(absProjectDir string) (string, error) {
+	return runInDocker(absProjectDir, "npm install --prefer-offline 2>&1", 180)
+}
+
 // RunTSC runs TypeScript type-checking (tsc --noEmit) inside Docker.
+// It assumes node_modules is already installed in the project directory.
 // framework should be "react", "vue3", or "react-native".
-// absProjectDir must be an absolute path.
 func RunTSC(absProjectDir, framework string) *Result {
 	start := time.Now()
 
-	// npm install first (in case node_modules not yet populated), then tsc
-	var tscCmd string
-	switch framework {
-	case "react-native":
-		// Expo uses expo-ts-check or tsc with expo tsconfig
-		tscCmd = "npm install --prefer-offline 2>&1 && npx tsc --noEmit 2>&1"
-	default:
-		tscCmd = "npm install --prefer-offline 2>&1 && npx tsc --noEmit 2>&1"
-	}
+	// Use the local TypeScript binary from node_modules — avoids npx installing
+	// the wrong 'tsc' package (there's a fake npm package called 'tsc@2.0.4').
+	tscCmd := "./node_modules/.bin/tsc --noEmit 2>&1"
 
-	output, err := runInDocker(absProjectDir, tscCmd, 120)
+	output, err := runInDocker(absProjectDir, tscCmd, 60)
 	dur := time.Since(start).Round(time.Millisecond).String()
 
-	// tsc exits with non-zero when there are errors
 	passed := err == nil && !strings.Contains(output, "error TS")
 	errs := parseTSCErrors(output)
 
@@ -143,18 +172,19 @@ func RunTSC(absProjectDir, framework string) *Result {
 }
 
 // RunBuild runs the production build (Vite build / expo export:web) inside Docker.
+// It assumes node_modules is already installed.
 func RunBuild(absProjectDir, framework string) *Result {
 	start := time.Now()
 
 	var buildCmd string
 	switch framework {
 	case "react-native":
-		buildCmd = "npm install --prefer-offline 2>&1 && npx expo export:web 2>&1"
+		buildCmd = "./node_modules/.bin/expo export:web 2>&1"
 	default:
-		buildCmd = "npm install --prefer-offline 2>&1 && npm run build 2>&1"
+		buildCmd = "./node_modules/.bin/vite build 2>&1"
 	}
 
-	output, err := runInDocker(absProjectDir, buildCmd, 180)
+	output, err := runInDocker(absProjectDir, buildCmd, 120)
 	dur := time.Since(start).Round(time.Millisecond).String()
 
 	passed := err == nil && !strings.Contains(strings.ToLower(output), "error")

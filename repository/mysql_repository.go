@@ -127,9 +127,14 @@ func (spr *MySQLSessionPersistenceRepository) InsertMessage(ctx context.Context,
 			return fmt.Errorf("failed to get next message index: %w", err)
 		}
 
-		// Insert message
-		query := `INSERT INTO messages (project_id, role, content, timestamp, message_index, status) VALUES (?, ?, ?, ?, ?, ?)`
-		_, err = tx.ExecContext(ctx, query, internalProjectID, msg.Role, msg.Content, msg.Timestamp, nextIndex, msg.Status)
+		// Insert message — coerce empty Metadata to nil so MySQL JSON column
+		// accepts it as NULL rather than rejecting "" as invalid JSON.
+		var metadataVal interface{}
+		if msg.Metadata != "" {
+			metadataVal = msg.Metadata
+		}
+		query := `INSERT INTO messages (project_id, role, content, timestamp, message_index, status, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)`
+		_, err = tx.ExecContext(ctx, query, internalProjectID, msg.Role, msg.Content, msg.Timestamp, nextIndex, msg.Status, metadataVal)
 		if err != nil {
 			return fmt.Errorf("failed to insert message: %w", err)
 		}
@@ -150,7 +155,7 @@ func (spr *MySQLSessionPersistenceRepository) GetSessionMessages(ctx context.Con
 
 	err := spr.retryWithBackoff(ctx, 3, func() error {
 		query := `
-			SELECT m.id, p.uuid, m.role, m.content, m.timestamp, m.message_index, m.status 
+			SELECT m.id, p.uuid, m.role, m.content, m.timestamp, m.message_index, m.status, COALESCE(m.metadata, '') 
 			FROM messages m
 			INNER JOIN projects p ON m.project_id = p.id
 			WHERE p.uuid = ? AND p.user_id = ? AND m.status != 'failed'
@@ -164,7 +169,7 @@ func (spr *MySQLSessionPersistenceRepository) GetSessionMessages(ctx context.Con
 
 		for rows.Next() {
 			var msg model.Message
-			err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.Role, &msg.Content, &msg.Timestamp, &msg.MessageIndex, &msg.Status)
+			err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.Role, &msg.Content, &msg.Timestamp, &msg.MessageIndex, &msg.Status, &msg.Metadata)
 			if err != nil {
 				return fmt.Errorf("failed to scan message: %w", err)
 			}
@@ -193,14 +198,16 @@ func (spr *MySQLSessionPersistenceRepository) ListSessions(ctx context.Context, 
 		// Get paginated projects with summary data
 		// Use uuid as the external project_id
 		query := `
-			SELECT p.uuid, 
+			SELECT p.uuid,
+				   p.name,
+				   COALESCE(p.updated_at, p.created_at) as updated_at,
 				   COALESCE(MAX(m.timestamp), p.created_at) as last_message_timestamp,
 				   COUNT(m.id) as message_count
 			FROM projects p
 			LEFT JOIN messages m ON p.id = m.project_id AND m.status != 'failed'
 			WHERE p.user_id = ? AND p.is_deleted = FALSE
-			GROUP BY p.id, p.uuid
-			ORDER BY p.created_at DESC
+			GROUP BY p.id, p.uuid, p.name, p.updated_at, p.created_at
+			ORDER BY COALESCE(p.updated_at, p.created_at) DESC
 			LIMIT ? OFFSET ?`
 
 		rows, err := spr.db.QueryContext(ctx, query, userID, limit, offset)
@@ -211,7 +218,7 @@ func (spr *MySQLSessionPersistenceRepository) ListSessions(ctx context.Context, 
 
 		for rows.Next() {
 			var summary model.SessionSummary
-			err := rows.Scan(&summary.ConversationID, &summary.LastMessageTimestamp, &summary.MessageCount)
+			err := rows.Scan(&summary.ConversationID, &summary.Name, &summary.UpdatedAt, &summary.LastMessageTimestamp, &summary.MessageCount)
 			if err != nil {
 				return fmt.Errorf("failed to scan project summary: %w", err)
 			}
@@ -308,6 +315,19 @@ func (spr *MySQLSessionPersistenceRepository) SetFramework(ctx context.Context, 
 			framework, projectID, userID)
 		if err != nil {
 			return fmt.Errorf("failed to set framework: %w", err)
+		}
+		return nil
+	})
+}
+
+// UpdateName updates the project name.
+func (spr *MySQLSessionPersistenceRepository) UpdateName(ctx context.Context, projectID string, userID string, name string) error {
+	return spr.retryWithBackoff(ctx, 3, func() error {
+		_, err := spr.db.ExecContext(ctx,
+			`UPDATE projects SET name = ? WHERE uuid = ? AND user_id = ?`,
+			name, projectID, userID)
+		if err != nil {
+			return fmt.Errorf("failed to update project name: %w", err)
 		}
 		return nil
 	})

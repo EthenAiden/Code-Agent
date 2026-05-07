@@ -24,6 +24,7 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/ethen-aiden/code-agent/prompts"
 )
 
 // PlannerConfig holds configuration for the Planner agent
@@ -99,120 +100,13 @@ func (p *Planner) buildPlanningPrompt(userRequest string, contextInfo map[string
 		contextStr = string(contextBytes)
 	}
 
-	prompt := `You are a CODE GENERATION PLANNER. Create step-by-step plans for building actual, working code projects.
-
-## Your Task
-
-Break down the user's request into SPECIFIC, ACTIONABLE steps that will result in REAL CODE FILES being created.
-
-## Critical Guidelines
-
-1. **Be Specific About Files**: Each step should specify EXACTLY which file to create/modify
-2. **Include Complete Code**: Steps should result in COMPLETE, WORKING code files
-3. **Follow Project Structure**: Organize files properly (src/, components/, etc.)
-4. **Start with Scaffold**: For new projects, first step should initialize the project structure
-5. **Build Incrementally**: Create core files first, then features, then polish
-
-## Step Format
-
-Each step should be CONCRETE and ACTIONABLE:
-
-❌ BAD: "Create the user interface"
-✅ GOOD: "Create src/App.tsx with main application component including routing and layout"
-
-❌ BAD: "Add styling"
-✅ GOOD: "Create src/index.css with Tailwind directives and custom styles"
-
-❌ BAD: "Implement the feature"
-✅ GOOD: "Create src/components/UserList.tsx with data fetching, loading states, and error handling"
-
-## Available Tools (Executor will use these)
-
-- scaffold_project: Initialize project with framework boilerplate
-- write_file: Write code to files
-- read_file: Read existing files
-- list_directory: List directory contents
-- run_type_check: Validate TypeScript
-- run_build: Validate project builds
-- execute_code: Test code execution
-
-## Example Plan for "Create a todo app"
-
-{
-  "goal": "Build a React TypeScript todo application with add, complete, and delete functionality",
-  "steps": [
-    {
-      "id": 1,
-      "description": "Initialize React TypeScript project structure using scaffold_project tool",
-      "executed": false
-    },
-    {
-      "id": 2,
-      "description": "Create src/types/Todo.ts with TypeScript interfaces for Todo items",
-      "executed": false
-    },
-    {
-      "id": 3,
-      "description": "Create src/components/TodoItem.tsx with individual todo item component including complete and delete buttons",
-      "executed": false
-    },
-    {
-      "id": 4,
-      "description": "Create src/components/TodoList.tsx with list rendering and state management",
-      "executed": false
-    },
-    {
-      "id": 5,
-      "description": "Create src/components/AddTodo.tsx with input form and add functionality",
-      "executed": false
-    },
-    {
-      "id": 6,
-      "description": "Create src/App.tsx integrating all components with useState for todo management",
-      "executed": false
-    },
-    {
-      "id": 7,
-      "description": "Create src/App.css with styling for the todo application",
-      "executed": false
-    }
-  ]
-}
-
-## Response Format
-
-{
-  "goal": "Clear description of what will be built",
-  "steps": [
-    {
-      "id": 1,
-      "description": "Specific action with file path and what code to create",
-      "executed": false
-    }
-  ]
-}
-
-## Context Information
-`
+	prompt := prompts.Load("planner_build_planning.txt")
 
 	if contextStr != "" {
 		prompt += fmt.Sprintf("\n```json\n%s\n```\n", contextStr)
 	} else {
 		prompt += "\nNo additional context provided.\n"
 	}
-
-	prompt += `
-## Important Rules
-
-- Respond ONLY with JSON, no additional text
-- Each step must specify WHICH FILE to create/modify
-- Steps should result in ACTUAL CODE FILES, not discussions
-- Include 5-10 steps for most projects
-- First step for new projects: scaffold_project
-- Last steps: validation (run_type_check, run_build)
-- Be specific about file paths and content
-
-Now create a detailed, file-specific execution plan.`
 
 	return prompt
 }
@@ -246,6 +140,13 @@ func (p *Planner) parsePlanResponse(content string, userRequest string) (*Plan, 
 	// Set goal if empty
 	if plan.Goal == "" {
 		plan.Goal = userRequest
+	}
+
+	// Initialize step status if not set
+	for _, step := range plan.Steps {
+		if step.Status == "" {
+			step.Status = "pending"
+		}
 	}
 
 	return &plan, nil
@@ -322,57 +223,13 @@ func (p *Planner) buildReplanningPrompt(currentPlan *Plan, executionResults stri
 		contextStr = string(contextBytes)
 	}
 
-	prompt := `You are a replanning agent for a code generation assistant. Your task is to update an execution plan based on execution results.
-
-## Your Responsibilities
-
-1. Review the current plan and execution results
-2. Identify which steps have been completed successfully
-3. Determine if remaining steps need modification
-4. Create an updated plan with only the remaining necessary steps
-5. Adjust steps based on what was learned from execution
-
-## Guidelines for Updating Plans
-
-- Remove completed steps from the updated plan
-- Renumber remaining steps sequentially starting from 1
-- Modify step descriptions if execution revealed new information
-- Add new steps if needed to complete the goal
-- Keep the same goal unless it needs refinement
-
-## Response Format
-
-Respond with a JSON object in the following format:
-{
-  "goal": "The overall objective (same or refined)",
-  "steps": [
-    {
-      "id": 1,
-      "description": "Updated or new step instruction",
-      "executed": false
-    }
-  ]
-}
-
-## Context Information
-`
+	prompt := prompts.Load("planner_build_replanning.txt")
 
 	if contextStr != "" {
 		prompt += fmt.Sprintf("\n```json\n%s\n```\n", contextStr)
 	} else {
 		prompt += "\nNo additional context provided.\n"
 	}
-
-	prompt += `
-## Important Notes
-
-- Respond ONLY with the JSON object, no additional text
-- Only include unexecuted steps in the updated plan
-- Renumber steps starting from 1
-- Set "executed" to false for all steps
-- Consider execution results when updating steps
-
-Now, review the current plan and execution results, then create an updated plan.`
 
 	return prompt
 }

@@ -1,0 +1,22 @@
+## Framework Constraints: Vue 3 (Vite + TypeScript)
+
+You MUST follow these rules for ALL generated code:
+- Framework: Vue 3 with Composition API (<script setup lang="ts">). NEVER use Options API.
+- Language: TypeScript only. No plain JavaScript files.
+- Build tool: Vite. Config file: vite.config.ts.
+- Module system: ES Modules (import/export). No CommonJS (require/module.exports).
+- File extensions: .vue for components, .ts for logic, .tsx only when JSX is needed.
+- Directory structure:
+  src/
+    components/   (shared reusable components)
+    views/ or pages/  (route-level components)
+    composables/  (reusable Composition API hooks, prefix with "use")
+    stores/       (Pinia stores if state management is needed)
+    assets/       (static assets)
+    router/       (Vue Router config if routing is needed)
+    types/        (TypeScript type definitions)
+  App.vue         (root component)
+  main.ts         (entry point)
+- Type-check command: "vue-tsc --noEmit"
+- DO NOT use class components, mixins, or Vue 2 patterns.
+- DO NOT use @Options decorator or defineComponent with options object unless strictly necessary.

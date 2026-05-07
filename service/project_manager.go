@@ -203,3 +203,12 @@ func (sm *ProjectManager) SetFramework(ctx context.Context, conversationID strin
 	}
 	return nil
 }
+
+// SetName updates the project display name.
+func (sm *ProjectManager) SetName(ctx context.Context, conversationID string, userID string, name string) error {
+	err := sm.sessionRepo.UpdateName(ctx, conversationID, userID, name)
+	if err != nil {
+		return ConvertRepositoryError("NAME_UPDATE_FAILED", err)
+	}
+	return nil
+}
