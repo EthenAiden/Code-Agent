@@ -42,12 +42,12 @@ const (
 // ── Tool-name constants ───────────────────────────────────────────────────────
 
 const (
-	toolWriteFile    = "write_file"
-	toolScaffold     = "scaffold_project"
-	toolTypeCheck    = "run_type_check"
-	toolBuild        = "run_build"
-	toolReadFile     = "read_file"
-	toolListDir      = "list_directory"
+	toolWriteFile = "write_file"
+	toolScaffold  = "scaffold_project"
+	toolTypeCheck = "run_type_check"
+	toolBuild     = "run_build"
+	toolReadFile  = "read_file"
+	toolListDir   = "list_directory"
 )
 
 // bridgeResult is returned after draining the AgentEvent stream.
@@ -185,16 +185,40 @@ func consumeAgentEvents(
 				dispatchPlannerMessage(msg, tw, &res, &stepIndex)
 
 			case agentNameExecutor:
-				// Executor is about to call tools — emit a status per tool call.
+				// Emit a status for each tool the executor is about to call.
 				for _, tc := range msg.ToolCalls {
-					statusEvt := mustMarshal(map[string]interface{}{
+					toolLabel := tc.Function.Name
+					// For write_file, append the path so users can see what file is being written.
+					if toolLabel == toolWriteFile {
+						var targs map[string]interface{}
+						if json.Unmarshal([]byte(tc.Function.Arguments), &targs) == nil {
+							if p, ok := targs["path"].(string); ok && p != "" {
+								toolLabel = "write_file: " + p
+							}
+						}
+					}
+					tw.emit(mustMarshal(map[string]interface{}{
 						"type":    sseTypeStatus,
-						"message": fmt.Sprintf("Calling %s…", tc.Function.Name),
-					})
-					tw.emit(statusEvt)
+						"message": fmt.Sprintf("Calling %s…", toolLabel),
+					}))
+				}
+				// Surface plain-text executor replies (no tool call) as a status + log.
+				if len(msg.ToolCalls) == 0 && msg.Content != "" {
+					log.Printf("[Executor] no-tool-call text: %s", truncate(msg.Content, 300))
+					tw.emit(mustMarshal(map[string]interface{}{
+						"type":    sseTypeStatus,
+						"message": truncate(msg.Content, 120),
+					}))
 				}
 
 			case agentNameReplanner:
+				// Log replanner decision so it's visible in server logs.
+				if msg.Content != "" {
+					log.Printf("[Replanner] decision: %s", truncate(msg.Content, 300))
+				}
+				for _, tc := range msg.ToolCalls {
+					log.Printf("[Replanner] tool=%s args=%s", tc.Function.Name, truncate(tc.Function.Arguments, 200))
+				}
 				// Replanner fired — close current step, open next.
 				doneEvt := mustMarshal(map[string]interface{}{
 					"type":       sseTypePlanStepDone,

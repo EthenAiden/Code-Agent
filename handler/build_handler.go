@@ -181,12 +181,15 @@ func (h *BuildHandler) startDevServer(projectID, projectDir, userID, framework s
 
 	fmt.Printf("Starting Docker dev server for project %s on port %d...\n", projectID, port)
 
-	// Build the dev command based on framework
+	// Build the dev command based on framework.
+	// node_modules is already installed locally (scaffold_tool runs npm install),
+	// so we skip npm install here to save startup time. If node_modules is absent
+	// for some reason the fallback is a quick --prefer-offline install.
 	var devCmd string
 	if framework == "react-native" {
-		devCmd = fmt.Sprintf("npm install --prefer-offline 2>&1 && npx expo start --web --port %d 2>&1", port)
+		devCmd = fmt.Sprintf("(test -d node_modules || npm install --prefer-offline 2>&1) && npx expo start --web --port %d 2>&1", port)
 	} else {
-		devCmd = fmt.Sprintf("npm install --prefer-offline 2>&1 && npm run dev -- --port %d --host 0.0.0.0 2>&1", port)
+		devCmd = fmt.Sprintf("(test -d node_modules || npm install --prefer-offline 2>&1) && ./node_modules/.bin/vite --port %d --host 0.0.0.0 2>&1", port)
 	}
 
 	// docker run -d (detached) starts the container and returns the container ID immediately.
